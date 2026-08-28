@@ -1,44 +1,104 @@
-# dsh-plugins — DSH 插件与内置知识库
+<div align="center">
 
-> 本仓库承载本机对 DeepSeek Harness（DSH）的定制、扩展与内置知识库。
-> 目录结构与路由规则是**强约束**，见 [`AGENTS.md`](AGENTS.md)；本文件只做导航总览。
+# DSH Plugins
 
-## 三个分区
+### Give DeepSeek Harness a browser, a desktop, and a team of agents.
 
-| 分区 | 放什么 |
-| --- | --- |
-| `plugins/manual/` | **手动维护的插件** —— 我们自己手写的代码/补丁/脚本（source of truth 在此） |
-| `plugins/community/` | **三方社区插件** —— `dsh plugin add` 装的 npm 包，这里只留集成配方/记录，不 vendor 源码 |
-| `knowledge/` | **内置知识库** —— 关于 DSH 机制的基础事实 / 领域知识 / 操作手册 |
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-## 目录树即索引
+[![License: MIT](https://img.shields.io/badge/License-MIT-66e3bd.svg)](LICENSE)
+[![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-5FA04E.svg)](https://nodejs.org/)
+[![Latest release](https://img.shields.io/github/v/release/DjangoAILab/dsh-plugins?display_name=tag&sort=semver)](https://github.com/DjangoAILab/dsh-plugins/releases)
+[![Last commit](https://img.shields.io/github/last-commit/DjangoAILab/dsh-plugins)](https://github.com/DjangoAILab/dsh-plugins/commits/main)
 
-**要列出所有插件或知识？直接看目录**，本文件不维护内容清单：
+Open-source extensions and field-tested engineering notes for
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
-```bash
-ls plugins/manual plugins/community
-ls knowledge/foundations knowledge/domains knowledge/runbooks
+</div>
+
+## Three things worth seeing
+
+### 1. Browser Use — operate the DOM, not a pile of pixels
+
+Connect to a dedicated Chrome profile over CDP, observe the page as a compact accessibility tree, address elements
+with stable refs, and fall back to screenshots only when structure is not enough. The plugin includes navigation,
+tabs, forms, dialogs, uploads, console/network inspection, masked cookies, persistent sessions, and an optional
+fail-closed approval gate.
+
+![Browser Use demo: a structured snapshot is used to fill and run a task](assets/browser-use.gif)
+
+The demo above is real: the plugin's CDP client and action primitives drive an isolated local page. No account,
+browser history, or production endpoint is present. [Open the Browser Use module →](plugins/manual/dsh-browser-control/README.md)
+
+### 2. Computer Use — native macOS control through Accessibility
+
+Turn macOS applications into an element-level tool surface through `AXUIElement`: inspect apps and windows, snapshot
+the accessibility tree, then click, type, press keys, use menus, scroll, launch, activate, or quit. A Swift helper
+runs behind a bounded JSON-lines protocol; missing permissions and unsupported platforms fail closed.
+
+![Computer Use demo: the AX tree resolves a TextEdit element and updates it](assets/computer-use.gif)
+
+This is a window-only capture of the actual Swift AX driver resolving and editing an isolated TextEdit document.
+[Open the Computer Use module →](plugins/manual/dsh-computer-use/README.md)
+
+### 3. Subagents — Codex and Claude Code as native DSH providers
+
+Register external coding agents behind DSH's own subagent contract instead of inventing another scheduler. Foreground
+runs, background jobs, polling, cancellation, subprocess trees, output limits, provider aliases, and sandbox profiles
+remain explicit and deployment-controlled.
+
+```mermaid
+flowchart LR
+    A[DSH tool call] --> B[Native subagent provider]
+    B --> C[Codex CLI]
+    B --> D[Claude Code CLI]
+    B --> E[DSH Job]
+    E --> F[job_output]
+    E --> G[job_kill]
+    G --> H[AbortSignal → process tree]
 ```
 
-每个模块/知识点在自己的目录里自带 `README.md` 自述（放什么 + 何时读）。父级 README
-（本文件与各级 README）只约定**结构与路由规则**，不罗列内容——那样会随增删腐化。
+[Open the External Agents module →](plugins/manual/dsh-external-agents/README.md)
 
-## 上下文路由
+## Why it is built this way
 
-- 任务开始先读本 README 了解结构。
-- 涉及 DSH 机制 → `knowledge/foundations/`（L0 基础事实，必读）。
-- 领域性知识 → `knowledge/domains/<领域>/`（L1）。
-- 具体操作步骤 → `knowledge/runbooks/<操作>/`（L2）。
-- 插件相关 → 读对应模块目录的 README（`plugins/manual/` 或 `plugins/community/`）。
+- **Structure first.** DOM and accessibility trees are cheaper, more inspectable, and more deterministic than
+  screenshot-only control. Screenshots remain a deliberate fallback.
+- **Native lifecycle.** Plugins reuse DSH providers, Jobs, cancellation signals, and subprocess ownership.
+- **Least privilege by default.** Sensitive actions can require human approval; external agents keep a sandbox unless
+  the deployer deliberately selects a different profile.
+- **Reversible modules.** Every module documents what changed, how it takes effect, and how to roll it back.
 
-完整铁律见 [`AGENTS.md`](AGENTS.md)。
-
-## 获取仓库
+## Start here
 
 ```bash
 git clone https://github.com/DjangoAILab/dsh-plugins.git
 cd dsh-plugins
 ```
 
-插件均以各自目录中的 README 为准。涉及本地安装时，请从仓库根目录执行示例命令，
-不要照抄维护者机器上的绝对路径。
+Choose one of the three modules above and follow its pinned install, verification, and rollback instructions. This
+repository intentionally treats its directory tree as the complete index:
+
+```bash
+ls plugins/manual
+ls plugins/community
+ls knowledge/foundations knowledge/domains knowledge/runbooks
+```
+
+- `plugins/manual/` contains source maintained in this repository.
+- `plugins/community/` contains integration recipes for upstream packages; third-party source is not vendored there.
+- `knowledge/` contains reusable DSH facts, domain research, and operational runbooks.
+
+## Updates, credit, and scope
+
+- See [Releases](https://github.com/DjangoAILab/dsh-plugins/releases) for publishable milestones and
+  [CHANGELOG.md](CHANGELOG.md) for the dated project history.
+- See [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md) for derived works, community integrations, and design references.
+  Attribution is explicit; a reference does not imply affiliation or endorsement.
+- This is a curated public snapshot, not a mirror of any private deployment repository. Secrets, private history,
+  production configuration, and internal screenshots do not belong here.
+
+## License
+
+Repository-original work is available under the [MIT License](LICENSE). Vendored or adapted modules retain their
+upstream notices and licenses; consult the module-local license and [acknowledgements](ACKNOWLEDGEMENTS.md).

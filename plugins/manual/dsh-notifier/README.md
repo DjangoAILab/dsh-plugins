@@ -1,5 +1,10 @@
 # dsh-notifier
 
+> **Origin / 来源：** this directory is a vendored derivative of
+> [`THEWOLFWALKER/dsh-notifier@0.7.3`](https://github.com/THEWOLFWALKER/dsh-notifier) (MIT), with local additions
+> and fixes. Channel-adapter work also carries explicit upstream credit in
+> [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). It is not presented as an original flagship of this repository.
+
 > **Your agent, in your pocket.** — 通知、审批、遥控，全在你的手机里。
 
 **English** · [**简体中文**](README.zh-CN.md)
