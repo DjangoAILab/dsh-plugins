@@ -1,0 +1,50 @@
+# dsh-external-agents v0.3.1 bundle patch
+#
+# 安装：从仓库根目录执行
+#   dsh plugin --profile <name> add "file:$PWD/plugins/manual/dsh-external-agents"
+#
+# 配置或版本变化后需要冷启动 DSH。以下 provider、模型和域名都是公开占位示例，
+# 使用前请替换并完成端到端兼容性验证。
+- insert:
+    - id: dsh-external-agents
+      name: 'dsh-external-agents'
+      config:
+        graceMs: 15000
+        maxOutputBytes: 50000
+        codex:
+          enabled: true
+          command: codex
+          # 保留沙箱；不要为非交互调用默认开启危险 bypass。
+          args: ['exec', '--skip-git-repo-check', '-s', 'workspace-write']
+          # v0.3.1：可由部署者定义具名 argv 档位。active 默认 normal；
+          # 工具调用不接受档位参数，切换需要改配置并重新安装、冷启动。
+          argsProfiles:
+            active: normal
+            read-only: ['exec', '--skip-git-repo-check', '-s', 'read-only']
+          defaultModel: fast
+          providers:
+            builtin:
+              type: builtin
+            gateway:
+              baseUrl: 'https://api.example.com/v1'
+              wireApi: responses
+              envKey: THIRD_PARTY_API_KEY
+              apiKey: '${ENV:THIRD_PARTY_API_KEY}'
+              models: ['provider-model-fast', 'provider-model-pro']
+          models:
+            fast: { provider: gateway, model: provider-model-fast }
+            pro:  { provider: gateway, model: provider-model-pro }
+            builtin-default: { provider: builtin, model: '<codex-model-id>' }
+        claude:
+          enabled: true
+          command: claude
+          args: ['--print', '--output-format', 'text']
+          argsProfiles:
+            active: normal
+            batch: ['--print', '--output-format', 'text', '--allowedTools', 'Bash(npm test:*)']
+          # model: '<claude-model-id>'
+          # provider: gateway
+          # providers:
+          #   gateway:
+          #     baseUrl: 'https://api.example.com'
+          #     apiKey: '${ENV:THIRD_PARTY_ANTHROPIC_KEY}'

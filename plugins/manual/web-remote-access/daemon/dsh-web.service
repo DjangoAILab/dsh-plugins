@@ -1,0 +1,27 @@
+# Linux systemd 用户单元模板（user unit）。
+# 放置到 ~/.config/systemd/user/dsh-web.service 后：
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now dsh-web
+# 若要「开机自启且不要求登录」，先开 linger：
+#   sudo loginctl enable-linger <用户名>
+#
+# 注意：把下面所有 /home/USER 与 node/dsh 路径替换成目标机器的实际路径。
+
+[Unit]
+Description=DeepSeek Harness Web GUI
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/USER/Project
+Environment=HOME=/home/USER
+Environment=DSH_HOME=/home/USER/.dsh
+Environment=PATH=/home/USER/.nvm/versions/node/v22.21.1/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/USER/.nvm/versions/node/v22.21.1/bin/node /path/to/dsh/lib/bin.js web
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/home/USER/.dsh/dsh-web.log
+StandardError=append:/home/USER/.dsh/dsh-web.log
+
+[Install]
+WantedBy=default.target

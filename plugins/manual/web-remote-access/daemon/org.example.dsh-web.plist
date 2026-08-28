@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.example.dsh-web</string>
+
+    <!-- 用显式的 node + 固定运行时 bin.js，避免 launchd 依赖 shell PATH，
+         也避免 npm exec 并发改写共享 _npx 缓存。 -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__NODE_BIN__</string>
+        <string>__DSH_BIN__</string>
+        <string>web</string>
+    </array>
+
+    <!-- 影响 process.cwd() 与默认 sandbox workspace root；按需改成稳定目录。 -->
+    <key>WorkingDirectory</key>
+    <string>__WORKDIR__</string>
+
+    <!-- 登录即启动，异常退出自动拉起。 -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.dsh/dsh-web.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.dsh/dsh-web.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>DSH_HOME</key>
+        <string>__HOME__/.dsh</string>
+        <key>PATH</key>
+        <string>__PATH__</string>
+    </dict>
+</dict>
+</plist>

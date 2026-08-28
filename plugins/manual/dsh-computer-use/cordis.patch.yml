@@ -1,0 +1,26 @@
+# dsh-computer-use bundle patch：把插件行插入 profile roster。
+# 安装：从仓库根目录执行 dsh plugin --profile <name> add "file:$PWD/plugins/manual/dsh-computer-use"。
+# （bundle 插件，装完必须重启 DSH 才生效。见 knowledge/foundations/plugin-loading-and-hot-reload.md）
+#
+# 设计权威见 knowledge/domains/computer-use/architecture-framework.md（ADR-1/ADR-3、P2）与
+# knowledge/domains/computer-use/accessibility-tree-drivers.md（§五 设计决议）；
+# 审批机制见 knowledge/foundations/tool-approval-interception-and-secrets.md。
+- insert:
+    - id: dsh-computer-use
+      name: 'dsh-computer-use'
+      config:
+        # Swift driver 编译产物目录：留空 = <插件目录>/driver（axdriver.swift 现场编译成 axdriver）。
+        # Lab 容器内是 Linux，driver/工具会在非 darwin 平台 fail-closed 报「仅支持 macOS」。
+        driverDir: ''
+        # Swift 编译器路径：留空 = /usr/bin/swiftc（Xcode CLT）。
+        swiftcPath: ''
+        # 敏感动作（click/type/key/scroll/menu/app）是否走人工审批
+        # （userQuestions.ask，只主 agent 可问人）。默认 false，与 dsh-browser-control 一致。
+        approveActions: false
+        # 单条 driver 请求超时（毫秒）。AX 树遍历在多层大窗口上可能到秒级。
+        commandTimeoutMs: 15000
+        # 截图落盘目录：留空 = $DSH_HOME/dsh-computer-use/screenshots。
+        # computer_screenshot 只截屏存 PNG 并返回路径，读图交给 modlens_read_image 等视觉能力。
+        screenshotDir: ''
+        # 截图长边上限（像素，最小 320）：sips 降采样控制读图 token。
+        screenshotMaxDimension: 1280

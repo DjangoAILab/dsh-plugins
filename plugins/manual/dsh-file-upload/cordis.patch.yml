@@ -1,0 +1,6 @@
+# dsh-file-upload-local：本地手搓文件上传插件（流式上传 + 文件卡片 + chat history 预览/下载）
+# 单 entry 包名挂载：host apply 与 client 半都走包加载（package.json 的 dsh.client + exports["./client"]）。
+# 双 entry 会让 host apply 跑两次，/api/file-upload/save 路由重复注册崩溃——务必只挂这一条。
+- insert:
+    - id: file-upload-local
+      name: 'dsh-file-upload-local'

@@ -1,0 +1,30 @@
+# DSH Web 服务端化补丁（应用到 $DSH_HOME/profiles/web/cordis.patch.yml 的用户层）
+#
+# 作用：
+#   1. webserver 绑定 0.0.0.0 —— 让 Web GUI 从「仅 loopback」变为「所有网卡可达」。
+#      这是 DSH webserver schema 本就支持的取值（127.0.0.1 | 0.0.0.0）。
+#      之所以不通过 `dsh web --host 0.0.0.0`，是因为 dsh-web-app/startup.js 在 CLI
+#      层显式拒绝了该参数；这里直接覆盖组合里的 webserver 行配置即可绕过（组合层是
+#      部署方自己的决定，属于 DSH 提供的正规扩展点）。
+#   2. connection 信任反向代理域名 —— trustedHosts 是 DNS-rebinding 防伪白名单，
+#      反代域名访问时浏览器带的是域名 Host，必须把域名加入白名单，否则 /api 与
+#      WebSocket 会被 403 拒绝。同时保留 0.0.0.0 绑定后自动推导出的 LAN IP 字面量。
+#
+# 副作用（DSH 内建行为，无需改代码）：
+#   * 一旦 host != 127.0.0.1，dsh-host-directory-picker-auto 会自动从 native 后端
+#     （浏览器 File System Access API）切换到 browse 后端（浏览器内逐级列服务器目录），
+#     从而修复远程访问时「选项目走本地文件 API」的问题。
+#
+# 安全提示：
+#   DSH Web GUI 是完整的远程代码执行面（agent 可运行 shell）。trustedHosts 只是防
+#   重绑定，不是认证。无论部署在局域网还是公网，都必须在边缘补认证
+#   （basicAuth / OIDC / forwardAuth / 登录插件）。
+
+- id: webserver
+  config:
+    host: '0.0.0.0'
+    port: 3080
+
+- id: connection
+  config:
+    trustedHosts: !!js "['dsh.example.com', ...ctx.webRuntime.trustedHosts]"

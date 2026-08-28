@@ -1,0 +1,29 @@
+# dsh-browser-control bundle patch：把插件行插入 profile roster。
+# 安装：从仓库根目录执行 dsh plugin --profile <name> add "file:$PWD/plugins/manual/dsh-browser-control"。
+# （bundle 插件，装完必须重启 DSH 才生效。见 knowledge/foundations/plugin-loading-and-hot-reload.md）
+#
+# 设计权威见 knowledge/domains/computer-use/architecture-framework.md（ADR-1/ADR-3、P0）；
+# 审批机制见 knowledge/foundations/tool-approval-interception-and-secrets.md。
+- insert:
+    - id: dsh-browser-control
+      name: 'dsh-browser-control'
+      config:
+        # CDP 端点：Chrome/Chromium 以 --remote-debugging-port=9222 启动后暴露。
+        # 连的是「本机已登录浏览器」，登录态零迁移。
+        cdpEndpoint: 'http://127.0.0.1:9222'
+        # 敏感动作（browser_click / browser_type）是否走人工审批（userQuestions.ask，只主 agent 可问人）。
+        # false = 不弹审批；true = 每次敏感动作弹一次性审批。
+        approveActions: false
+        # 单次 CDP 命令超时（毫秒）。
+        commandTimeoutMs: 15000
+        # 截图落盘目录：留空 = $DSH_HOME/dsh-browser-control/screenshots。
+        # browser_screenshot 只截屏存 PNG 并返回路径，读图交给 modlens_read_image 等视觉能力。
+        screenshotDir: ''
+        # 自动拉起 Chrome：端点不在时，任一浏览器工具自动 spawn 带调试端口的 Chrome。
+        autoLaunch: true
+        # Chrome 可执行文件路径：留空 = 按常见路径自动探测。
+        chromePath: ''
+        # 无头模式：false = 有窗口（能看能交互），true = 后台无头。
+        headless: false
+        # Chrome 独立 profile 目录：留空 = ~/dsh-browser-profile（登录态常驻这里，登录一次即复用）。
+        profileDir: ''

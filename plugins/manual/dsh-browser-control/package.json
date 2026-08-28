@@ -1,0 +1,44 @@
+{
+  "name": "dsh-browser-control",
+  "version": "0.1.0",
+  "description": "DSH 浏览器控制插件（P0）：经 Chrome DevTools Protocol（CDP）把本机已登录浏览器变成 DOM 快照优先的短交互工具集（browser_pages / browser_navigate / browser_snapshot / browser_click / browser_type / browser_extract）；敏感动作可选人工审批；登录态零迁移。",
+  "type": "module",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "test",
+    "cordis.patch.yml",
+    "scripts/preflight.mjs",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "preflight": "node scripts/preflight.mjs"
+  },
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "browser",
+    "cdp",
+    "chrome-devtools-protocol"
+  ]
+}
