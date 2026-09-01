@@ -2,7 +2,7 @@
 
 # DSH Plugins
 
-### 给 DeepSeek Harness 一双眼睛、一双手，以及一支 Agent 团队。
+### 让 DeepSeek Harness 在护栏内操作浏览器、桌面、Subagent 与远程服务器。
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
@@ -15,7 +15,7 @@
 
 </div>
 
-## 三个最值得看的能力
+## 四个最值得看的能力
 
 ### 1. Browser Use —— 操作 DOM，而不是盯着一堆像素猜
 
@@ -57,11 +57,31 @@ flowchart LR
 
 [查看 External Agents 模块 →](plugins/manual/dsh-external-agents/README.md)
 
+### 4. SSH Operations —— 管服务器，但不把凭据交给模型
+
+由操作员把远程主机登记为易记代号，Agent 只能列出代号并逐条执行有界命令。主机地址、用户名、私钥、
+登录密码和 sudo 密码都留在插件边界之后。TOFU 主机指纹、逐命令审批、独立提权审批与脱敏 JSONL 审计，
+让整个控制链可检查、可追溯。
+
+```mermaid
+flowchart LR
+    O[操作员设置] --> R[主机代号 + 凭据引用]
+    A[Agent] --> T[ssh_list_hosts / ssh_exec]
+    T --> P[策略 + 人工审批]
+    R --> P
+    P --> F[TOFU 主机指纹校验]
+    F --> S[SSH 服务器]
+    P --> L[脱敏审计日志]
+```
+
+sudo 使用两阶段 fail-closed 协议：先尝试免密执行，只有远端明确要求密码时才注入已保存的 sudo 密码。
+当前版本刻意不开放交互式 PTY、上传或下载。[查看 SSH Operations 模块 →](plugins/manual/ops-ssh-manager/README.md)
+
 ## 为什么这样设计
 
 - **结构优先。** DOM 与辅助功能树比纯截图更省上下文、更可检查，也更确定；截图保留为明确兜底。
 - **复用原生生命周期。** 插件沿用 DSH provider、Jobs、取消信号和子进程归属。
-- **默认最小权限。** 敏感动作可要求人工审批；外部 Agent 默认保留沙箱，除非部署者明确选择其他档位。
+- **默认最小权限。** 敏感动作可要求人工审批；外部 Agent 默认保留沙箱，SSH 提权另有独立审批边界。
 - **模块可回滚。** 每个模块都说明改了什么、怎么生效、怎么回滚。
 
 ## 从这里开始
@@ -71,7 +91,7 @@ git clone https://github.com/DjangoAILab/dsh-plugins.git
 cd dsh-plugins
 ```
 
-从上面三项中选一个，按模块 README 的版本固定、验证与回滚步骤操作。仓库仍以目录树作为完整索引：
+从上面四项中选一个，按模块 README 的版本固定、验证与回滚步骤操作。仓库仍以目录树作为完整索引：
 
 ```bash
 ls plugins/manual

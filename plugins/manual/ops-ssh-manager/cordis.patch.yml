@@ -1,0 +1,12 @@
+# ops-ssh-manager bundle patch：把插件行插入 profile roster。
+# 安装：dsh plugin --profile <name> add file:<本目录>（bundle 插件，装完必须重启 DSH）。
+# 设计权威见 DESIGN.md；机制事实见 knowledge/foundations/tool-approval-interception-and-secrets.md。
+- insert:
+    - id: ops-ssh-manager
+      name: 'ops-ssh-manager'
+      config:
+        # 数据目录：留空 = $DSH_HOME/ops-ssh-manager（roster.json + audit.jsonl 落这里）。
+        # 私钥/密码不落这里——它们走 DSH credentials 服务（$DSH_HOME/.credentials.yaml）。
+        dataDir: ''
+        # 审计日志路径：留空 = <dataDir>/audit.jsonl（JSONL，敏感字段已打码）。
+        auditLog: ''

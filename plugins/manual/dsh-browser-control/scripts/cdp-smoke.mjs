@@ -1,7 +1,7 @@
 // scripts/cdp-smoke.mjs
 // 真实 Chrome 端到端 smoke：连 CDP 端点 → navigate 到 data: 测试页 → snapshot（a11y + ref）
 // → 按 ref 点击按钮 → 按 ref 向输入框 type → extract。验证 cdp.mjs / actions.mjs / snapshot.mjs
-// 的协议假设（getFullAXTree / DOM.getBoxModel / dispatchMouseEvent / insertText）。
+// 的协议假设（getFullAXTree / scrollIntoView + getBoundingClientRect / dispatchMouseEvent / insertText）。
 //
 // 用法：node scripts/cdp-smoke.mjs [endpoint]   （默认 http://127.0.0.1:9222）
 // 前置：Chrome 以 --remote-debugging-port=9222 启动。
@@ -45,12 +45,13 @@ try {
 
   const { text, refs } = await snapshot(client)
   assert(text.includes('Hello Browser'), 'snapshot should contain heading text')
-  assert(refs.size >= 3, 'snapshot refs should be >=3, got ' + refs.size)
+  // ref 只给可交互角色（button/link/textbox…）：smoke 页面正好有 input + button = 2 个 ref。
+  assert(refs.size >= 2, 'snapshot refs should be >=2, got ' + refs.size)
   console.log('[ok] snapshot: ' + refs.size + ' refs')
   console.log('--- snapshot preview ---')
   console.log(text.split('\n').slice(0, 10).join('\n'))
 
-  // 按 ref 点击按钮（ref → backendDOMNodeId → DOM.getBoxModel → 鼠标事件）。
+  // 按 ref 点击按钮（ref → backendDOMNodeId → scrollIntoView + getBoundingClientRect → 鼠标事件）。
   const nodes = await getNodes(client)
   const btn = nodes.find((n) => n.role && n.role.value === 'button' && n.name && n.name.value === 'Go')
   assert(btn && btn.backendDOMNodeId, 'button a11y node with backendDOMNodeId')

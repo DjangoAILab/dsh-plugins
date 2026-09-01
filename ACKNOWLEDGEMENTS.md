@@ -20,6 +20,13 @@ authoritative notices.
 - [`dsh-web-mobile`](plugins/manual/dsh-web-mobile/) vendors and locally maintains
   [`mexiaosqwq/dsh-web-mobile@v1.0.0`](https://github.com/mexiaosqwq/dsh-web-mobile), licensed under MIT. Its
   [module license](plugins/manual/dsh-web-mobile/LICENSE) and upstream README are preserved.
+- [`ops-ssh-manager`](plugins/manual/ops-ssh-manager/) adapts the destructive-command policy expressions and audit
+  redaction behavior from [`bvisible/mcp-ssh-manager`](https://github.com/bvisible/mcp-ssh-manager) (MIT). See its
+  [third-party notices](plugins/manual/ops-ssh-manager/THIRD_PARTY_NOTICES.md) and preserved
+  [upstream license](plugins/manual/ops-ssh-manager/LICENSE-MCP-SSH-MANAGER).
+- [`code-longwait-preset`](plugins/manual/code-longwait-preset/) is a minimally modified copy of DeepSeek Harness's
+  shipped `code` agent preset: only the Job wait-limit configuration changes. The upstream MIT license is preserved
+  in the [module](plugins/manual/code-longwait-preset/LICENSE).
 
 ## Community integrations
 
@@ -43,6 +50,9 @@ also named in the "Vendored or adapted code" section above, this repository does
   [ZSeven-W/dsh-crew](https://github.com/ZSeven-W/dsh-crew),
   [`@monotykamary/dsh-subagent-claude-code`](https://www.npmjs.com/package/@monotykamary/dsh-subagent-claude-code),
   and [kky42/codex-as-mcp](https://github.com/kky42/codex-as-mcp).
+- SSH operations: [Lynricsy/OneSSH](https://github.com/Lynricsy/OneSSH) and
+  [classfang/ssh-mcp-server](https://github.com/classfang/ssh-mcp-server) informed host modeling, TOFU, privilege
+  separation, and tool-contract trade-offs. Their source code is not included here.
 
 ## Foundation and trademarks
 

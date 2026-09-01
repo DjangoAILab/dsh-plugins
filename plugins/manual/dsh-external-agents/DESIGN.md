@@ -1,154 +1,176 @@
-# dsh-external-agents v2 设计
+# dsh-external-agents v2 设计（单工具 + model 参数 + 灵活后端 + 继承异步）
 
-> 目标：从“每个模型一个工具”升级为“一个 `codex` 工具 + `model` 参数”。
-> provider/model 由插件配置驱动，异步直接继承 DSH 的 `ctx.jobs`，不自建调度器。
+> 目标：把 codex 从「每模型一个工具」升级为「一个 `codex` 工具 + `model` 参数」，
+> provider/model 全部由插件配置驱动，异步继承 DSH 原生 `ctx.jobs`（不重造；收数语义见 §8）。
+> 本文档是落地实现的单一权威来源；实现 session 先读本文再动手。
 
-本文是当前实现的设计依据。实现位于：
+> **落地状态：已按本文 §5 实现（2026-08-18）。** 实现细节见 `src/route.mjs`（配置解析+校验）、
+> `src/tool.mjs`（自写单工具+codex_models）、重构后的 `src/index.mjs`（route provider 注册+挂载），
+> 单测见 `test/`，import preflight 见 `scripts/preflight.mjs`。§6 的待验证点已有定论（见该节）。
 
-- `src/route.mjs`：配置解析、校验与 route 生成；
-- `src/tool.mjs`：`codex`、`codex_models`、`claude_code` 工具；
-- `src/index.mjs`：provider 注册和工具挂载；
-- `test/`：route、前后台执行和取消链测试；
-- `scripts/preflight.mjs`：安装副本中的宿主 peer import 预检。
+## 1. 结论（方案 D）
 
-## 1. 方案
+**一个薄自写工具 + 内部 route provider + 原生 `ctx.jobs`。**
+放弃 `dsh-tool-subagent`（其 schema 写死、无 model 参数、无参数透传钩子），但异步能力不是重造，而是直接借用：
 
-采用“薄自写工具 + 内部 route provider + 原生 Jobs”：
+- 同步：`ctx.subagents.start(routeProvider, { prompt, parent, signal })` → await `run.result` → `run.dispose()`。
+- 异步：`ctx.jobs.start(...)`（Job 名 `subagent-N`），`job_output`/`job_kill` 由 DSH 已有 `dsh-tool-jobs` 直接读/取消，零自研；
+  取消链 = `job_kill → jobs.kill → AbortSignal → provider → subprocess 树级终止`。收尾复用官方 `settleRun(run)`。
 
-- 同步：`ctx.subagents.start(...)` 后等待 `run.result`，最后释放 run；
-- 异步：`ctx.jobs.start(...)` 返回 Job id，由已有的 `job_output` / `job_kill` 读取和取消；
-- 取消链：`job_kill → jobs.kill → AbortSignal → provider → subprocess terminate()`；
-- 进程结果仍通过 DSH subagent 的 canonical JSON block 返回。
-
-v2 移除了 `@deepseek-ai/dsh-tool-subagent`。原因不是重写 DSH 的 subagent，而是它的工具 schema
-无法自然表达按调用选择的 `model` 参数。provider、run、Job 和取消生命周期仍然全部复用 DSH。
-
-## 2. 配置面
+## 2. 配置面（provider/model 灵活，与 DSH 主模型选择器解耦）
 
 ```yaml
 codex:
-  toolName: codex
+  toolName: codex            # 唯一模型可见工具名
   command: codex
   args: ['exec', '--skip-git-repo-check', '-s', 'workspace-write']
-  argsProfiles:
-    active: normal
-    read-only: ['exec', '--skip-git-repo-check', '-s', 'read-only']
   defaultModel: fast
   providers:
-    builtin:
+    builtin:                 # codex 内置 OpenAI（无需 baseUrl/key）
       type: builtin
-    gateway:
+    gateway:                 # OpenAI-compatible provider
       baseUrl: 'https://api.example.com/v1'
       wireApi: responses
       envKey: THIRD_PARTY_API_KEY
       apiKey: '${ENV:THIRD_PARTY_API_KEY}'
-      models: ['provider-model-fast', 'provider-model-pro']
-  models:
+  models:                    # 模型可见别名 -> route（provider + 实际 model）
     fast: { provider: gateway, model: provider-model-fast }
     pro:  { provider: gateway, model: provider-model-pro }
 ```
 
 设计原则：
+- `providers`/`models` 全在插件配置，不读 DSH 主会话 model selector。
+- 工具只收「模型别名」，不收 baseUrl/key/provider/argv（防注入）。
+- 配置错误（重复 route、未知 provider、缺 defaultModel、provider 的 models allowlist 不符）在启动时 fail loud。
 
-1. `providers` / `models` 不读取 DSH 主会话的模型选择器。
-2. 模型只能传公开别名；工具参数不接受 base URL、密钥、provider id 或 argv。
-3. 未知 provider、无效默认模型、空 models、allowlist 不匹配等配置在加载时直接报错。
-4. 密钥使用 `${ENV:NAME}` 引用，不写入仓库。
+### 2.1 权限档位（v2.2 `argsProfiles`）
 
-### 2.1 参数档位
+**问题**：headless 一次性运行没有人工审批面（机制与验证方式见 README §2.3）：
+`codex exec` 天生 `approval: never`，卡的是文件沙箱；`claude -p` 无沙箱但自带权限系统，需审批命令直接拦。
+「放开」只有两条正道：yolo 全量信任，或批限白名单；都属于部署者的显式配置选择。
 
-Codex 与 Claude 共用 `argsProfiles` 解析规则。`args` 定义 `normal` 基线，具名档位只由部署者配置；
-`active` 默认 `normal`。工具调用不接受档位名或任意 argv，所以模型不能自行切换执行边界。出现具名档位时
-必须保留 `normal`，未知档位和非法 argv 在加载时直接报错。更高权限不是默认能力，是否配置由部署环境自行
-评估，并且切换需要重新安装和冷启动。
+**设计**：codex/claude 共享 `resolveArgsProfiles()`（route.mjs 纯函数，单测覆盖）——
+`args` = normal 基线档；`argsProfiles` = 具名档位 map + `active`；解析失败 apply 时 fail loud。
+legacy 配置（只有 `args` 或全缺省）原样可用：全缺省 = 空 normal 档（CLI 默认旗标）。
+一旦出现具名档位，强制要求 normal 基线并存——保守档必须始终可用、可回退。
+**工具面不给模型暴露权限参数**（§2 防注入边界延伸），切档 = 改 config + 重装 + 重启 DSH。
+挂载日志会打出 `args profile "<active>" (available: ...)`，运行期档位一眼可查。
 
-## 3. 模型发现
+## 3. 模型列表如何暴露给 Agent（策略：两个都要）
 
-同时提供两种方式：
+1. **`codex` 工具 description 动态列举**（primary）：apply 时从 config 生成，
+   形如 `可用 model：fast / pro（默认 fast）`。
+   Agent 在 system prompt 里直接看到、零额外 round-trip。
+2. **`codex_models` 查询工具**（secondary，`isConcurrencySafe`）：返回「别名 → provider → 实际 model」映射，
+   供 Agent 需要时刷新/枚举（模型多了或动态变化时兜底）。
 
-1. `codex` 的 description 动态列出别名与默认模型，避免额外工具调用；
-2. `codex_models` 返回当前别名到 provider/model 的映射，供配置变化后主动刷新。
+> 为什么两个都要：模型少且稳定时 description 已够用（省一次工具调用）；但 config 可能随发布变，
+> 留一个 list 工具保证 Agent 永远能拿到「当下有效的模型集合」，而不是依赖过期的 description。
 
-`codex_models` 展示的是插件的配置路由，不是第三方网关最终选择了哪个上游。若网关内部还有 fallback，
-实际供应商归因必须由网关自己的可观测性提供。
+## 4. 依赖声明与安装（响应冷启动 ERR_MODULE 的健壮性定论）
 
-## 4. Provider invocation
+- 根因：`link:` 装法让 Node 跟随 symlink 回到源码真实路径，从仓库向上找不到 `$DSH_HOME/profiles/node_modules` 的 fallback。
+- **不改用 `dependencies` 装宿主基础包**（会形成第二套 cordis/dsh-*，身份/版本漂移风险大）。
+- 最终 `package.json`（实现 BCD 后）：
+  `peerDependencies: { @deepseek-ai/cordis: "4.0.1", @deepseek-ai/dsh-subagent: "0.1.0-rc.7", @deepseek-ai/dsh-tools: "0.1.0-rc.7", @deepseek-ai/dsh-jobs: "0.1.0-rc.7" }`，
+  **删掉 `@deepseek-ai/dsh-tool-subagent`**（不再用）。版本写死、不带 `^`。
+- 生产安装唯二要求：从仓库根目录使用 `file:$PWD/...` + 冷启动前跑 import preflight。
 
-内置 Codex provider 只追加 `-m <model>`。自定义 OpenAI-compatible provider 通过 Codex 的 `-c` 覆盖：
+## 5. 实现步骤
 
-```text
-model_providers.<id>.name=<id>
-model_providers.<id>.base_url=<url>
-model_providers.<id>.wire_api=responses
-model_providers.<id>.env_key=<env-name>
-model_provider=<id>
-```
+1. 改 `package.json`：peer 精确 pin + 删 dsh-tool-subagent（若已自写工具）。
+2. 保留 `src/provider.mjs`（出进程 provider + `ctx.subprocess`，基本不动），改名为「route provider」；
+   每个 route = 独立内部 provider 名 `external:codex:<model别名>`，config 解析出 provider + 实际 model。
+3. 新增 `src/tool.mjs`：`ctx.tools.register({ name:'codex', parameters: { model, prompt, run_in_background }, execute })`；
+   同步分支 + 异步分支（`ctx.jobs.start` + `settleRun`）按 §1。
+4. 新增 `codex_models` 工具（返回模型→route→provider 映射）。
+5. 卸载 `ctx.plugin(toolSubagent,...)` 相关代码（index.mjs 不再 import dsh-tool-subagent）。
+6. 单测：route 解析、description 动态列举、同步/异步、取消链；preflight 通过。
 
-`name` 不能省略。部分 Codex 版本在命令行构造 provider 时要求该字段非空；测试会验证它和其他覆盖项
-同时生成。
+## 6. 第三方 provider 兼容性
 
-插件只负责正确构造调用和路由。第三方端点是否完整实现 Responses API、流式事件和模型语义，必须由
-部署者对目标服务单独做端到端验收。
+Codex 自定义 OpenAI Responses provider 需要同时覆盖
+`model_providers.<id>.name/base_url/wire_api/env_key`；缺少 `name` 会在配置加载时报
+`provider name must not be empty`。插件负责生成这些覆盖，但“兼容 OpenAI/Anthropic”只是入口声明，
+不是完整兼容性证明。每个部署都应针对所用模型验证 Responses 或 Messages 请求、流式生命周期、
+错误语义、取消与长输出，再把该 route 暴露给 agent。密钥只通过 `${ENV:...}` 引用传入。
 
-## 5. 工具行为
+## 7. 兼容与回滚
 
-### `codex`
+- 现阶段「多工具」（codex_deepseek/codex_glm/codex_qwen）在 config.codex.models 里；v2 改为 `models: {别名:{provider,model}}` + 单工具后，
+  旧的 `models: [{model,toolName}]` 数组写法废弃，实现时保留一个兼容映射或直接替换。
+- 回滚：还原 config + 重启 DSH（bundle 冷启动）。
 
-参数：
+## 8. 后台 Job 收数语义与最佳实践（v2.3，2026-08-31 调研定论）
 
-- `description`：用于 UI 与 Job 标签；
-- `prompt`：交给外部 Agent 的自包含任务；
-- `model`：可选模型别名，省略时使用默认值；
-- `run_in_background`：是否立即返回 Job id。
+> 结论：**不新增 sleep/wait 工具。**「带最大等待时长的等待、完成即提前返回」已由原生
+> `job_output(job_id, wait: true, timeout_ms)` 完整覆盖；新增独立 sleep 工具只会制造一个看不到增量输出、
+> 更容易诱导空转轮询的竞品。本节是工具文案与 README 措辞的机制依据（单测
+> `test/tool.test.mjs` 的 guidance 断言防回退）。调研为双路独立核查（主会话 + codex 交叉验证，2026-08-31）。
 
-### `codex_models`
+**机制证据**（`@deepseek-ai/dsh-tool-jobs@0.1.1-rc.2 lib/index.js` 与 `@deepseek-ai/dsh-jobs-local lib/index.js`）：
 
-返回工具名、默认模型、命令，以及别名到 provider/model/kind 的配置映射。
+1. **等待语义**：`job_output` execute 在 `wait === true` 时先 `await ctx.jobs.wait(id, timeout, exec.agent, exec.signal)`
+   再 read；`jobs.wait` 用 `deadline(signal, timeoutMs, TASK_WAIT_TIMEOUT)` 融合调用方取消与超时——
+   job settle 时 `settle()` 先 resolve 全部 `waitResolvers`（**完成即提前返回**），超时分支 resolve 正常
+   返回当前 snapshot（**到时返回 `[status: running]`，job 存活**），外部取消才 reject "wait aborted"。
+2. **参数边界**：`timeout_ms` 缺省用 `waitTimeoutMs`（默认 30s），硬上限 `Math.min(timeout, maxWaitTimeoutMs)`
+   （默认 600s）；两者都是 `tool-jobs` 插件 config，部署者可调大。
+3. **完成自动通知**：`ctx.jobs.onJobDone` 给 owner 投 notice——owner 忙则 `inject` 进下一步，owner idle
+   则默认 `wakeup` 唤醒开新回合（`maxConsecutiveWakes` 默认 3，用户消息到达即重置预算）。**等待中的 job
+   settle 时 `waiters > 0 → reported = true`，不重复投 notice**——主动等待与被动通知不叠加。
+4. **读取是增量**：`job_output` 对 stream job 返回「自上次读取以来的新增输出」；独立 sleep 工具拿不到增量，
+   sleep 后仍要 `job_output`，徒增一次糊涂选择。
 
-### `claude_code`
+**因此插件只做三件事**（本节即实现清单）：
 
-采用相同的前台/后台工具生命周期。模型和可选 Anthropic-compatible provider 在插件配置中烘焙，
-不向单次工具调用暴露密钥或端点参数。
+- 三个工具的 description / `run_in_background` 参数文案、后台 jobId 的 render 输出统一携带
+  `BACKEND_JOB_GUIDANCE`（`src/tool.mjs` 导出常量）：先做独立工作等通知；确需阻塞才
+  `wait:true`；点名 **不要 sleep/轮询**；`job_kill` 回收。
+- README §2.4 固化四步最佳实践；边界一节纠正「外部进程收不到完成推送」的旧表述
+  （完成 notice 与子 agent 是否 continuable 无关，producer 侧无需任何配合）。
+- 极端长任务（单次 wait 600s 不够）的正解是部署者调 `tool-jobs` 的 `maxWaitTimeoutMs`，
+  或干脆让完成通知唤醒，而不是加等待工具。**web 面的配置落点是 agent preset 的行**
+  （需要 1 小时上限可参考 `plugins/manual/code-longwait-preset`；profile 用户
+  补丁层的宿主面 tool-jobs 行被 web-app patch disabled，写在那里不生效）。
 
-## 6. 依赖与安装形态
+## 9. v2.4 codex session 连续性（session id 捕获 + resume，2026-08-31 定论）
 
-宿主包使用精确 peer 版本，避免形成第二套 Cordis/DSH 依赖：
+> 结论：**「成功必有 id」**。session id 是 resume 的唯一钥匙，codex 路由 spawn 恒带
+> `--json`（不提供关闭逃生门），completed 而双源（JSONL 首事件 `thread.started.thread_id`
+> 主源 + banner `session id:` 副源）都拿不到 id 时按失败上报，绝不静默降级成无 id 的成功。
+> 设计与 Codex 本体互审两轮（本轮修复：argv 从零构建、schema sessionId 可选、--ephemeral
+> apply 期 fail loud、claude 另开版本），端到端冒烟（真实 codex + 真实 provider 代码路径：
+> 第一轮拿 id、第二轮 resume 回显同 id 且记住第一轮 BANANA-42）通过后定稿。
 
-```json
-{
-  "@deepseek-ai/cordis": "4.0.1",
-  "@deepseek-ai/dsh-subagent": "0.1.0-rc.7",
-  "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
-  "@deepseek-ai/dsh-jobs": "0.1.0-rc.7"
-}
-```
+### 9.1 实测机制事实（codex-cli 0.146.0，升级需复核）
 
-生产安装使用 `file:/absolute/path`。`link:` 会让 Node 按源码真实路径解析依赖，可能找不到 profile 中的
-peer。冷启动前应在安装副本中运行 `node scripts/preflight.mjs && npm test`。
+1. `codex exec --json`：stdout 纯 JSONL，日志全在 stderr；首事件
+   `{"type":"thread.started","thread_id":"<uuid>"}`；最终回答 = 最后一条非空
+   `item.completed` 且 `item.type==='agent_message'` 的 `item.text`。
+2. `codex exec resume <SID> [flags] -`：stdin 哨兵可用；**无 `-s` 旗标**（结构性不收，
+   与 flags/SID 顺序无关），权限继承原会话；`-c sandbox_mode=` 可显式放开/收紧（实测
+   read-only 会话放开成 workspace-write 且写文件成功）；省略 `-m` 继承原会话模型。
+3. resume + `--json` 回显同一 `thread_id`（完整性校验）；`--skip-git-repo-check` 是
+   resume 硬前置（非信任目录不带给它直接报错）；`--ephemeral` 不落盘不可 resume。
+4. DSH 机制：`ctx.subagents.start` spread 透传 request（自定义 `sessionId` 字段直达
+   provider）；`settleRunResult` 对 completed 原样返回 attempt() 对象（`result.sessionId`
+   前台直达工具层）；后台 `runOutcome` 只保留 output 文本 → sessionId 靠 render 尾行携带；
+   collector 保尾 + spill 保头（stdout spill = thread.started 首行永在手）。
 
-## 7. 明确边界
+### 9.2 实现清单（本节即验收清单）
 
-- 外部 CLI 仍是 one-shot，没有 resume、进度流或持久线程引用；
-- stdout/stderr 最终缓冲为文本，不解析产品原生事件协议；
-- 默认输出上限由 `maxOutputBytes` 控制；
-- 后台是 Job 轮询，不是进程内 continuable subagent 的推送式回调；
-- 自定义端点兼容性属于端点能力，不能由插件配置成功推导。
-
-## 8. 验证门禁
-
-公开实现至少验证：
-
-- provider/model route 解析；
-- 自定义 provider 的完整 `-c` 参数；
-- 配置 fail-loud；
-- 参数档位解析、保守默认与非法配置拒绝；
-- 单工具模型选择与默认模型；
-- 前台结果收口；
-- 后台 Job 创建与取消信号传递；
-- Claude 单工具注册；
-- 安装副本的 peer 和源文件 import。
-
-## 9. 回滚
-
-还原旧插件配置或移除插件，然后冷启动 DSH。v2 的 `models` 是对象映射，旧的“每模型一个工具”数组
-写法不再作为主配置面支持。
+- `src/codex-output.mjs`：纯函数（isUuid / parseJsonlOutput 逐行抗损 /
+  parseBannerSessionId / extractCodexOutput 双源 / missingSessionIdReason /
+  sessionFooter），fixture 锁 0.146.0 事件形态。
+- `src/route.mjs`：active args 自动补 `--json`；`resumeArgs`（默认
+  `['--json','--skip-git-repo-check']`）透传 + 补 `--json` + fail loud 拒
+  `--ephemeral`；`stdoutMaxBytes`（默认 256KB）。
+- `src/provider.mjs`：codex 分叉 = JSONL 捕获 + stdout spill 保头 + resume argv
+  从零构建（不与 args/argsProfiles 叠加、不去重）；completed 无 id → error +
+  diagnostic；session_id 非 UUID 在 spawn 前拒绝。
+- `src/tool.mjs`：`session_id` 参数（UUID 防注入校验）+ schema 可选 `sessionId` +
+  render 尾行 + description 教父模型回传；插件零会话状态存储，拒绝 `--last`（并发歧义）。
+- 已知未做：跨 provider resume（builtin ↔ 自定义网关）行为未实测；claude session
+  连续性自 v2.5 起使用独立的 `--session-id` / `--resume` 路径；同 session 并发 resume 由父模型串行化（插件 `isConcurrencySafe`
+  是静态声明，检测不了）。

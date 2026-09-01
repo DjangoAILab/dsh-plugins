@@ -55,7 +55,7 @@ export function apply(ctx, config = {}) {
           stdinSentinel: route.stdinSentinel,
           extraArgs: route.extraArgs,
         }
-        disposers.push(ctx.subagents.registerProvider(createCliProvider({ ctx, name: route.providerName, config: invocation, graceMs, maxOutputBytes })))
+        disposers.push(ctx.subagents.registerProvider(createCliProvider({ ctx, name: route.providerName, config: invocation, codex: { resumeArgs: spec.resumeArgs, stdoutMaxBytes: spec.stdoutMaxBytes }, graceMs, maxOutputBytes })))
       }
       disposers.push(mountCodexTools(ctx, spec))
       return () => { for (const d of disposers) { try { d() } catch { /* 忽略卸载失败 */ } } }
@@ -88,14 +88,16 @@ export function apply(ctx, config = {}) {
     //（对外进程 provider 而言，agentOptions/model 在子进程侧不生效）。
     ctx.effect(() => {
       const disposers = [
-        ctx.subagents.registerProvider(createCliProvider({ ctx, name: providerName, config: invocation, graceMs, maxOutputBytes })),
+        ctx.subagents.registerProvider(createCliProvider({ ctx, name: providerName, config: invocation, claudeSession: cs.sessionSupport ? { resumeArg: cs.resumeArg, newSessionArg: cs.newSessionArg } : undefined, graceMs, maxOutputBytes })),
         mountSingleTool(ctx, {
           toolName: cs.toolName,
           providerName,
           body: '把一个自包含任务交给外部 agent（claude）在独立上下文里一次性跑完。当前权限档位 '
             + cs.argsProfiles.active + '（档位由部署者在插件 config 的 argsProfiles 里定义，模型不可切换）。'
-            + '同步阻塞等 CLI 结束；run_in_background: true 则返回后台 Job id，之后用 job_output 轮询、job_kill 取消。',
+            + '同步阻塞等 CLI 结束；run_in_background: true 则返回后台 Job id（收数：完成自动通知，或 job_output(wait:true) 带上限等待；不要 sleep/轮询）。'
+            + (cs.sessionSupport ? '结果末尾附带 session id 行；要在同一 claude 会话上继续迭代，把它原样传回 session_id 参数（省略 = 全新会话）。' : ''),
           modelInfo: undefined,
+          sessionSupport: cs.sessionSupport,
         }),
       ]
       return () => { for (const d of disposers) { try { d() } catch { /* 忽略卸载失败 */ } } }

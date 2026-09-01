@@ -24,21 +24,21 @@ test('renderNodeLine: long value strings truncated at 80', () => {
   assert.ok(line.length < 200)
 })
 
-test('renderSnapshotLines: header + nodes + truncation marker', () => {
+test('renderSnapshotLines: header + nodes + truncation marker（v0.2.0：windowId 头）', () => {
   const lines = renderSnapshotLines({
-    pid: 42, windowIndex: 1, windowCount: 3, title: 'Main',
+    pid: 42, windowId: 'win_abc123_7', title: 'Main',
     frame: { x: 10.2, y: 20.7, width: 800, height: 600 },
     nodes: [{ ref: '@0', depth: 0, role: 'AXWindow', title: 'Main' }],
     truncatedNodes: 5,
   })
   assert.equal(lines.length, 3)
-  assert.match(lines[0], /window 1\/3 of pid=42 .*"Main"/)
+  assert.match(lines[0], /window win_abc123_7 of pid=42 .*"Main"/)
   assert.match(lines[0], /\(10,21\) 800x600/)
   assert.match(lines[2], /5 nodes truncated/)
 })
 
 test('renderSnapshotLines: empty tree → hint not error', () => {
-  const lines = renderSnapshotLines({ pid: 1, windowIndex: 0, windowCount: 1, nodes: [] })
+  const lines = renderSnapshotLines({ pid: 1, windowId: 'win_abc123_1', nodes: [] })
   assert.equal(lines.length, 2)
   assert.match(lines[1], /empty AX tree/)
 })
@@ -56,15 +56,22 @@ test('renderAppsLines: empty', () => {
   assert.deepEqual(renderAppsLines([]), ['(no regular GUI apps running)'])
 })
 
-test('renderWindowsLines: hint path + window path', () => {
-  const hint = renderWindowsLines({ windows: [], hint: 'app 未暴露 AX 树' })
-  assert.match(hint[0], /app 未暴露 AX 树/)
+test('renderWindowsLines: 按 app 分组 + windowId 句柄 + capture/minimized 标记（v0.2.0）', () => {
+  const empty = renderWindowsLines({ windows: [], hint: 'app 暂未响应 AX 请求' })
+  assert.match(empty[0], /no windows/)
+  assert.match(empty[0], /app 暂未响应 AX 请求/)
   const wins = renderWindowsLines({
     windows: [
-      { ref: 'w0', title: 'Doc', frame: { x: 0, y: 0, width: 100, height: 50 }, minimized: false, main: true },
-      { ref: 'w1', title: 'Zed', minimized: true },
+      { windowId: 'win_n_1', pid: 8, appName: 'Edit', title: 'Doc', frame: { x: 0, y: 0, width: 100, height: 50 }, minimized: false, main: true, captureAvailable: true },
+      { windowId: 'win_n_2', pid: 8, appName: 'Edit', title: 'Zed', minimized: true, captureAvailable: false },
+      { windowId: 'win_n_3', pid: 9, appName: 'Web', title: 'Home', frame: { x: 1, y: 2, width: 30, height: 40 }, minimized: false, main: false, focused: true, captureAvailable: true },
     ],
   })
-  assert.match(wins[0], /w0 "Doc"  \(0,0\) 100x50 \[main\]/)
-  assert.match(wins[1], /w1 "Zed"\s+\[minimized\]/)
+  // 分组头（同 app 一次）+ 每窗一行
+  assert.match(wins[0], /pid=8 Edit/)
+  assert.match(wins[1], /win_n_1 "Doc".*\(0,0\) 100x50.*\[main\].*\[capture ✓\]/)
+  assert.match(wins[2], /win_n_2 "Zed".*\[minimized\]/)
+  assert.doesNotMatch(wins[2], /\[capture ✓\]/)
+  assert.match(wins[3], /pid=9 Web/)
+  assert.match(wins[4], /win_n_3 "Home".*\[focused\]/)
 })

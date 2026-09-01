@@ -1,27 +1,35 @@
 // dsh-browser-control —— 模型可见工具集（P0 短交互闭环）：
 //   browser_pages   列出 CDP 端点的 page target（tab）
-//   browser_navigate 导航到 URL 并等待加载
-//   browser_snapshot 渲染 a11y 树快照（DOM 快照优先，带稳定 ref）
+//   browser_navigate 导航到 URL 并等待加载（校验 errorText + scheme 白名单）
+//   browser_snapshot 渲染 a11y 树快照（DOM 快照优先，可交互角色带稳定 ref）
 //   browser_click   ref 或 selector 点元素（敏感，可选审批）
 //   browser_type    ref 或 selector 聚焦后输入文本（敏感，可选审批）
 //   browser_extract 取元素/页面文本（input 返回 value）
 //
-// 每次工具调用都重连 + 可选 targetId 选 tab（默认首个 page target）+ 用后即关，
-// ref 到 backendDOMNodeId 的映射在每次动作时重算，保证快照与点击自洽。
+// 连接由持久连接池（src/session.mjs）按 targetId 复用 WebSocket；console/network
+// 观测跨调用累积（navigate/reload 等换文档动作会重置对应 target 的缓冲）。
+// 可选 targetId 选 tab（默认首个 page target）；ref 到 backendDOMNodeId 的映射在
+// 每次动作时重算，保证快照与点击自洽。
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { evaluate, waitForLoad, listTargets, createTarget, closeTarget, activateTarget } from './cdp.mjs'
 import {
-  snapshot, resolvePoint, mouseClick, typeText, waitForAccessibility,
+  snapshot, resolvePoint, mouseClick, typeText, focusElement, waitForAccessibility,
   goBack, goForward, reload, fillValue, selectOption, hover, scroll, pressKey, drag,
   waitFor, handleDialog, setFiles, getCookies, deleteCookies,
 } from './actions.mjs'
 import { requestActionApproval } from './approve.mjs'
-import { acquire, closeSession, closeAll } from './session.mjs'
+import { acquire, closeSession, closeAll, resetBuffers, resolveTargetId } from './session.mjs'
 import { resolveScreenshotDir } from './config.mjs'
 import { ensureBrowser, launchChrome } from './launcher.mjs'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { truncateText } from './truncate.mjs'
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+
+// 输出截断预算（进模型上下文的三个大头；console/network 已有 MAX_BUFFER=200 条上限）。
+const SNAPSHOT_MAX_CHARS = 60000
+const EXTRACT_MAX_CHARS = 20000
+const EVALUATE_MAX_CHARS = 20000
 
 /** autoLaunch 时确保 Chrome 在跑，再取连接条目。 */
 async function withBrowser(cfg, targetId) {
@@ -41,6 +49,12 @@ async function gate(ctx, cfg, exec, tool, detail) {
   if (decision.verdict === 'denied') throw new Error(tool + ' denied: ' + decision.reason)
 }
 
+/** 渲染 evaluate 返回值：字符串原样，其余 JSON.stringify；统一截断预算。 */
+function renderValue(value, maxChars) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value)
+  return truncateText(text, maxChars)
+}
+
 const TARGET_SCHEMA = {
   ref: { type: 'string', description: '目标 ref（形如 @5，来自 browser_snapshot 输出）。' },
   selector: { type: 'string', description: 'CSS 选择器，作为 ref 缺失时的定位方式。' },
@@ -48,6 +62,24 @@ const TARGET_SCHEMA = {
 
 const TARGET_ID_SCHEMA = {
   targetId: { type: 'string', description: '目标标签页 id（来自 browser_pages 输出的 id）；省略操作第一个 page target。' },
+}
+
+const REF_STALENESS_NOTE =
+  'ref 来自最近一次 browser_snapshot；页面可能已变化，若点击效果与预期不符请重新 snapshot。'
+
+// navigate 的 URL scheme 白名单：http(s)/about/data；file:// 与其他 scheme 一律拒绝
+// （防模型把本地文件路径/内网地址喂给用户浏览器）。
+function assertAllowedUrl(rawUrl) {
+  let parsed
+  try {
+    parsed = new URL(String(rawUrl))
+  } catch {
+    throw new Error('browser_navigate: 无效 URL：' + String(rawUrl))
+  }
+  if (!['http:', 'https:', 'about:', 'data:'].includes(parsed.protocol)) {
+    throw new Error('browser_navigate: 只允许 http(s)/about/data，file:// 已禁用（收到 ' + parsed.protocol + '）')
+  }
+  return parsed.href
 }
 
 export function mountBrowserTools(ctx, cfg) {
@@ -84,6 +116,8 @@ export function mountBrowserTools(ctx, cfg) {
     },
     isConcurrencySafe: () => true,
     async execute() {
+      // 与其他浏览器工具一致走 autoLaunch：端点不在时先拉起 Chrome 再列 target。
+      if (cfg.autoLaunch) await ensureBrowser(cfg)
       const targets = await listTargets(cfg.cdpEndpoint)
       const pages = targets
         .filter((t) => t && t.type === 'page')
@@ -111,13 +145,23 @@ export function mountBrowserTools(ctx, cfg) {
     },
     isConcurrencySafe: () => false,
     async execute(args) {
-      return withClient(cfg, async (client) => {
-        await client.send('Page.navigate', { url: String(args.url) })
+      const url = assertAllowedUrl(args.url)
+      const targetId = await resolveTargetId(cfg.cdpEndpoint, args.targetId)
+      const result = await withClient(cfg, async (client) => {
+        // 协议规定 errorText 「present if and only if navigation has failed」——必须读返回值。
+        const res = await client.send('Page.navigate', { url })
+        if (res && res.errorText) {
+          throw new Error('browser_navigate: 导航失败：' + res.errorText + ' (' + url + ')')
+        }
         await waitForLoad(client)
         await waitForAccessibility(client)
         const title = await evaluate(client, 'document.title')
-        return { url: String(args.url), title: typeof title === 'string' ? title : '' }
-      }, args.targetId)
+        const finalUrl = await evaluate(client, 'location.href')
+        return { url: typeof finalUrl === 'string' ? finalUrl : url, title: typeof title === 'string' ? title : '' }
+      }, targetId)
+      // 导航换文档：重置该 target 的 console/network 观测缓冲（连接仍在池里）。
+      resetBuffers(targetId)
+      return result
     },
   })))
 
@@ -125,7 +169,8 @@ export function mountBrowserTools(ctx, cfg) {
     name: 'browser_snapshot',
     description:
       '渲染当前页面的可访问性（a11y）树快照为结构化文本（DOM 快照优先，比截图便宜且确定性高）。' +
-      '每个可交互元素带 [ref=@N]，供 browser_click / browser_type 精准命中。',
+      '每个可交互元素带 [ref=@N]，供 browser_click / browser_type 精准命中。' +
+      '快照只覆盖顶层 frame；iframe 内容（含同源）不在快照中，必要时用 browser_evaluate 检查 iframe 内部。',
     parameters: {
       ...TARGET_ID_SCHEMA,
     },
@@ -140,14 +185,14 @@ export function mountBrowserTools(ctx, cfg) {
     async execute(args) {
       return withClient(cfg, async (client) => {
         const { text } = await snapshot(client)
-        return { text }
+        return { text: truncateText(text, SNAPSHOT_MAX_CHARS) }
       }, args.targetId)
     },
   })))
 
   disposers.push(ctx.tools.register(defineTool({
     name: 'browser_click',
-    description: '点击页面上 ref（来自 browser_snapshot）或 CSS selector 定位的元素。敏感动作，可能触发审批。',
+    description: '点击页面上 ref（来自 browser_snapshot）或 CSS selector 定位的元素。' + REF_STALENESS_NOTE + '敏感动作，可能触发审批。',
     parameters: {
       ...TARGET_ID_SCHEMA,
       ...TARGET_SCHEMA,
@@ -172,7 +217,7 @@ export function mountBrowserTools(ctx, cfg) {
 
   disposers.push(ctx.tools.register(defineTool({
     name: 'browser_type',
-    description: '点击聚焦 ref / selector 定位的元素后输入纯文本。敏感动作，可能触发审批。',
+    description: '点击聚焦 ref / selector 定位的元素后输入纯文本。' + REF_STALENESS_NOTE + '敏感动作，可能触发审批。',
     parameters: {
       ...TARGET_ID_SCHEMA,
       ...TARGET_SCHEMA,
@@ -191,6 +236,7 @@ export function mountBrowserTools(ctx, cfg) {
       return withClient(cfg, async (client) => {
         const point = await resolvePoint(client, args)
         await mouseClick(client, point.x, point.y) // 点击聚焦
+        try { await focusElement(client, args) } catch { /* 聚焦失败不阻塞输入 */ } // 显式 focus 兜底
         await typeText(client, args.text)
         return { typed: String(args.text), target: args.ref || args.selector || '' }
       }, args.targetId)
@@ -223,30 +269,43 @@ export function mountBrowserTools(ctx, cfg) {
           'return { text: els.map(read).join("\\n"), count: els.length }; })()'
         const result = await evaluate(client, expr)
         if (result === null || result === undefined) return { text: '', count: 0 }
-        return { text: typeof result.text === 'string' ? result.text : '', count: Number(result.count) || 0 }
+        const text = typeof result.text === 'string' ? result.text : ''
+        return { text: truncateText(text, EXTRACT_MAX_CHARS), count: Number(result.count) || 0 }
       }, args.targetId)
     },
   })))
 
   // ===== 导航历史 =====
-  const mountNav = (name, description, action, renderText) => {
+  // back/forward/reload 都返回导航后的 location.href；换文档后重置观测缓冲。
+  const mountNav = (name, description, action, verb) => {
     disposers.push(ctx.tools.register(defineTool({
       name,
       description,
       parameters: { ...TARGET_ID_SCHEMA },
       output: {
-        schema: { type: 'object', additionalProperties: false, properties: { navigated: { type: 'boolean', required: true } } },
-        render: () => [{ type: 'text', text: renderText }],
+        schema: {
+          type: 'object', additionalProperties: false,
+          properties: { navigated: { type: 'boolean', required: true }, url: { type: 'string' } },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: 'navigated ' + verb + (value.url ? ' → ' + value.url : ''),
+        }],
       },
       isConcurrencySafe: () => false,
       async execute(args) {
-        return withClient(cfg, async (client) => { await action(client); return { navigated: true } }, args.targetId)
+        const targetId = await resolveTargetId(cfg.cdpEndpoint, args.targetId)
+        const entry = await acquire(cfg.cdpEndpoint, targetId, cfg.commandTimeoutMs)
+        const url = await action(entry.client)
+        // 历史导航/刷新换文档：清观测缓冲（此时连接仍在池里）。
+        resetBuffers(targetId)
+        return { navigated: true, url: url || '' }
       },
     })))
   }
-  mountNav('browser_navigate_back', '后退到上一页（等价浏览器「后退」按钮）。', goBack, 'navigated back')
-  mountNav('browser_navigate_forward', '前进到下一页（等价浏览器「前进」按钮）。', goForward, 'navigated forward')
-  mountNav('browser_reload', '刷新当前页。', reload, 'reloaded')
+  mountNav('browser_navigate_back', '后退到上一页（等价浏览器「后退」按钮）。', goBack, 'back')
+  mountNav('browser_navigate_forward', '前进到下一页（等价浏览器「前进」按钮）。', goForward, 'forward')
+  mountNav('browser_reload', '刷新当前页。', reload, 'reload')
 
   // ===== Tab 管理 =====
   disposers.push(ctx.tools.register(defineTool({
@@ -349,7 +408,8 @@ export function mountBrowserTools(ctx, cfg) {
 
   disposers.push(ctx.tools.register(defineTool({
     name: 'browser_scroll',
-    description: '滚动页面：给 ref/selector 则把该元素滚动到可视区；否则按 delta_y/delta_x 滚轮滚动整页。',
+    description: '滚动页面：给 ref/selector 则把该元素滚动到可视区；否则按 delta_y/delta_x 滚轮滚动整页。' +
+      'delta_y/delta_x 为 CSS 像素（正=向下/向右，一个滚轮刻度约 100）。',
     parameters: { ...TARGET_ID_SCHEMA, ...TARGET_SCHEMA, delta_y: { type: 'integer', description: '纵向滚轮量（正=向下）。' }, delta_x: { type: 'integer', description: '横向滚轮量。' } },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { scrolled: { type: 'boolean', required: true } } },
@@ -357,8 +417,12 @@ export function mountBrowserTools(ctx, cfg) {
     },
     isConcurrencySafe: () => true,
     async execute(args) {
+      const hasTarget = args.ref || args.selector
+      if (!hasTarget && args.delta_y === undefined && args.delta_x === undefined) {
+        throw new Error('browser_scroll: 需要 delta_y/delta_x 至少一个，或 ref/selector 定位元素')
+      }
       return withClient(cfg, async (client) => {
-        const target = (args.ref || args.selector) ? args : undefined
+        const target = hasTarget ? args : undefined
         await scroll(client, target, args.delta_y || 0, args.delta_x || 0)
         return { scrolled: true }
       }, args.targetId)
@@ -409,7 +473,7 @@ export function mountBrowserTools(ctx, cfg) {
       const from = { ref: args.from_ref, selector: args.from_selector }
       const to = { ref: args.to_ref, selector: args.to_selector }
       if (!from.ref && !from.selector && !to.ref && !to.selector) throw new Error('browser_drag 需要 from_ref/from_selector 与 to_ref/to_selector 至少各一')
-      await gate(ctx, cfg, exec, 'browser_drag', '拖拽')
+      await gate(ctx, cfg, exec, 'browser_drag', '拖拽：' + (from.ref || from.selector || '?') + ' → ' + (to.ref || to.selector || '?'))
       return withClient(cfg, async (client) => {
         await drag(client, from, to)
         return { dragged: true }
@@ -448,14 +512,16 @@ export function mountBrowserTools(ctx, cfg) {
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { value: { type: 'json', required: true } } },
-      render: (_args, value) => [{ type: 'text', text: typeof value.value === 'string' ? value.value : JSON.stringify(value.value) }],
+      render: (_args, value) => [{ type: 'text', text: renderValue(value.value, EVALUATE_MAX_CHARS) }],
     },
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      await gate(ctx, cfg, exec, 'browser_evaluate', 'JS 求值')
+      await gate(ctx, cfg, exec, 'browser_evaluate', 'JS 求值：' + truncateText(String(args.expression), 500))
       return withClient(cfg, async (client) => {
         const value = await evaluate(client, String(args.expression))
-        return { value: value === undefined ? null : value }
+        const safe = value === undefined ? null : value
+        // value 本身也截：超长字符串截到预算，避免值进会话状态/上游日志时撑爆。
+        return { value: typeof safe === 'string' ? truncateText(safe, EVALUATE_MAX_CHARS) : safe }
       }, args.targetId)
     },
   })))
@@ -493,8 +559,14 @@ export function mountBrowserTools(ctx, cfg) {
     },
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      await gate(ctx, cfg, exec, 'browser_file_upload', '上传文件：' + JSON.stringify((args.file_paths || []).slice(0, 8)))
-      return withClient(cfg, async (client) => setFiles(client, args, (args.file_paths || []).map(String)), args.targetId)
+      const paths = (args.file_paths || []).map(String)
+      // gate 前先校验存在性，避免操作员批准了一个根本不存在的路径。
+      for (const p of paths) {
+        if (!existsSync(p)) throw new Error('browser_file_upload: 文件不存在：' + p)
+      }
+      const detail = '上传文件：' + truncateText(JSON.stringify(paths), 800)
+      await gate(ctx, cfg, exec, 'browser_file_upload', detail)
+      return withClient(cfg, async (client) => setFiles(client, args, paths), args.targetId)
     },
   })))
 
@@ -527,7 +599,7 @@ export function mountBrowserTools(ctx, cfg) {
 
   disposers.push(ctx.tools.register(defineTool({
     name: 'browser_delete_cookies',
-    description: '删除 cookie：给 name 删指定 cookie，省略 name 清除全部（可加 url 限定域，相当于登出）。',
+    description: '删除 cookie：给 name 删指定 cookie，省略 name 清除全部（可加 url 限定域，相当于登出）。敏感动作。',
     parameters: {
       ...TARGET_ID_SCHEMA,
       name: { type: 'string', description: 'cookie 名；省略删全部。' },
@@ -537,8 +609,11 @@ export function mountBrowserTools(ctx, cfg) {
       schema: { type: 'object', additionalProperties: false, properties: { deleted: { type: 'boolean', required: true } } },
       render: () => [{ type: 'text', text: 'deleted cookies' }],
     },
-    isConcurrencySafe: () => true,
-    async execute(args) {
+    // 审批本身有副作用语义：并发安全改 false（与其他敏感动作一致）。
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const detail = '删除 cookies：' + (args.name ? 'name=' + args.name : '全部 cookies') + (args.url ? ' @ ' + args.url : '')
+      await gate(ctx, cfg, exec, 'browser_delete_cookies', detail)
       return withClient(cfg, async (client) => {
         await deleteCookies(client, args.name, args.url)
         return { deleted: true }
@@ -548,7 +623,8 @@ export function mountBrowserTools(ctx, cfg) {
 
   disposers.push(ctx.tools.register(defineTool({
     name: 'browser_storage',
-    description: '读写浏览器存储 localStorage/sessionStorage：action=get/set/remove，key 为键，value 为 set 的值（字符串）。',
+    description: '读写浏览器存储 localStorage/sessionStorage：action=get/set/remove，key 为键，value 为 set 的值（字符串）。' +
+      '注意：get 返回明文，localStorage 可能含敏感 token，请勿将读到的值写入日志或回显给不可信方。',
     parameters: {
       ...TARGET_ID_SCHEMA,
       action: { type: 'string', required: true, description: 'get / set / remove。' },
@@ -646,7 +722,8 @@ export function mountBrowserTools(ctx, cfg) {
         mkdirSync(dir, { recursive: true })
         const path = join(dir, 'shot-' + Date.now() + '.png')
         writeFileSync(path, Buffer.from(res.data, 'base64'))
-        return { path, bytes: Buffer.byteLength(res.data, 'base64') }
+        // 字节数以解码后的 PNG 长度为准（Buffer.byteLength(str,'base64') 算的是 base64 文本长度）。
+        return { path, bytes: Buffer.from(res.data, 'base64').length }
       }, args.targetId)
     },
   })))

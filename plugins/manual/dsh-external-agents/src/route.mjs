@@ -34,7 +34,7 @@ function fail(message) {
 /**
  * 解析共享的「权限档位」（args profiles）。v2.2 新增；codex/claude 通用。
  *
- * 背景：
+ * 背景：headless CLI 没有交互审批面，因此权限必须由部署配置预先限定：
  *   headless 一次性运行没有人工审批面 —— codex exec 天生 approval: never（只剩沙箱边界），
  *   claude -p 遇需审批命令直接判 requires approval 拦截。放开只能靠 config 里的旗标档位；
  *   工具面不给模型暴露提权参数（防注入边界不变），切档 = 改配置 + 重装 + 重启 DSH。
@@ -96,7 +96,7 @@ export function resolveArgsProfiles(cfg, agentLabel) {
  * ⚠️ 实测要点（2026-08-18）：`-c model_providers.<id>.name=<id>` **必须**一起给——codex 0.146 的
  * ModelProviderInfo 要求 name 非空，缺它会在 config 加载时直接报
  * `model_providers.<id>: provider name must not be empty`。带 name 后 base_url/wire_api/env_key
- * 覆盖才能完整生效。端点是否真正兼容 Responses API 仍需由部署者单独验收。
+ * 覆盖全部生效（第三方 provider 仍需针对目标协议单独验收）。
  */
 export function resolveProviderInvocation(providerId, providerDef, modelName) {
   const model = (typeof modelName === 'string' && modelName.trim()) ? modelName.trim() : undefined
@@ -133,6 +133,20 @@ export function parseCodexConfig(cfg = {}) {
   const command = (typeof cfg.command === 'string' && cfg.command.trim()) ? cfg.command.trim() : ''
   if (!command) fail('codex.command is required in v2 config')
   const profiles = resolveArgsProfiles(cfg, 'codex')
+
+  // v2.4 resume（session 连续性）：resume 路径 argv 从零构建，resumeArgs 是唯一旗标旋钮，
+  // 不与 args/argsProfiles 叠加、不去重（resume 继承原会话沙箱；-c sandbox_mode= 可显式放开）。
+  // 默认集：--skip-git-repo-check 是 resume 硬前置（非信任目录不带给它直接报错，实测）；--json 让
+  // 续接轮也产结构化事件（resume + --json 回显同一 thread_id，实测）。--ephemeral 会话不落盘、
+  // 无法 resume（0.146.0 实测），fail loud 拒绝该组合。
+  const resumeArgsRaw = cfg.resumeArgs === undefined ? ['--json', '--skip-git-repo-check'] : cfg.resumeArgs
+  if (!Array.isArray(resumeArgsRaw)) fail('codex.resumeArgs must be an array of CLI args')
+  const resumeArgs = resumeArgsRaw.map(String)
+  if (resumeArgs.some((a) => a === '--ephemeral')) {
+    fail('codex.resumeArgs must not contain --ephemeral: ephemeral sessions are never persisted and cannot be resumed')
+  }
+  if (!resumeArgs.includes('--json')) resumeArgs.push('--json')
+
   const providers = (cfg.providers && typeof cfg.providers === 'object') ? cfg.providers : {}
   const modelEntries = (cfg.models && typeof cfg.models === 'object' && !Array.isArray(cfg.models)) ? cfg.models : {}
   const aliases = Object.keys(modelEntries)
@@ -175,17 +189,29 @@ export function parseCodexConfig(cfg = {}) {
     }
   })
 
+  // v2.4：codex 路由强制 --json（session id 是 resume 的唯一钥匙，「成功必有 id」，
+  // 不提供关闭逃生门）；stdout 缓冲提到 256KB（JSONL 事件流，首行 thread.started 保头 + 尾窗保最终回答），
+  // stderr 维持共享 maxOutputBytes（仅日志）。spill 由 provider 侧按此配置启用。
+  const activeArgs = profiles.args.includes('--json') ? profiles.args : [...profiles.args, '--json']
   return {
     toolName,
     command,
-    args: profiles.args,
+    args: activeArgs,
     argsProfiles: { active: profiles.active, available: Object.keys(profiles.profiles) },
+    resumeArgs,
+    stdoutMaxBytes: toPositiveInt(cfg.stdoutMaxBytes, 256 * 1024),
     cwd: (typeof cfg.cwd === 'string' && cfg.cwd.trim()) ? cfg.cwd.trim() : undefined,
     defaultModel,
     models,
     modelAliases: aliases,
     modelsView: models.map((r) => ({ alias: r.alias, provider: r.provider, model: r.model, kind: r.kind })),
   }
+}
+
+/** 正整数解析；非法回退默认值（缓冲类配置不值得 fail loud）。 */
+function toPositiveInt(value, fallback) {
+  const n = Number(value)
+  return (Number.isFinite(n) && Number.isInteger(n) && n > 0) ? n : fallback
 }
 
 /**
@@ -216,6 +242,13 @@ export function parseClaudeConfig(cfg = {}) {
     command,
     args: profiles.args,
     argsProfiles: { active: profiles.active, available: Object.keys(profiles.profiles) },
+    // v2.5：claude session 连续性。新会话由插件生成新 UUID 走 --session-id（id 在 spawn 前已知，
+    // 无需解析输出）；续接由父 agent 传回 session_id 走 --resume。实测（claude 2.1.220）：
+    // 同一 id 可多次 --resume；复用已存在 id 走 --session-id 会报 "already in use" 但 exit=0，
+    // 因此新会话永远用新 UUID，杜绝碰撞。
+    sessionSupport: cfg.session === false ? false : true,
+    resumeArg: '--resume',
+    newSessionArg: '--session-id',
     cwd: (typeof cfg.cwd === 'string' && cfg.cwd.trim()) ? cfg.cwd.trim() : undefined,
     env,
     extraArgs,

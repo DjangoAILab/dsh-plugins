@@ -1,4 +1,4 @@
-# dsh-external-agents v0.3.1 bundle patch
+# dsh-external-agents v0.5.1 bundle patch
 #
 # 安装：从仓库根目录执行
 #   dsh plugin --profile <name> add "file:$PWD/plugins/manual/dsh-external-agents"
@@ -42,6 +42,9 @@
           argsProfiles:
             active: normal
             batch: ['--print', '--output-format', 'text', '--allowedTools', 'Bash(npm test:*)']
+          sessionSupport: true
+          resumeArg: '--resume'
+          newSessionArg: '--session-id'
           # model: '<claude-model-id>'
           # provider: gateway
           # providers:

@@ -1,7 +1,7 @@
 {
   "name": "dsh-external-agents",
-  "version": "0.3.1",
-  "description": "把 Codex / Claude Code CLI 注册成 DSH subagent provider，支持模型路由、原生后台 Jobs 与由部署者控制的 CLI 参数档位。",
+  "version": "0.5.1",
+  "description": "把外部 CLI Agent（Codex / Claude Code）注册成 DSH subagent provider：codex 升级为「单工具 + model 参数」+ 内部 route provider + 原生 ctx.jobs 异步（完成自动通知 / job_output(wait:true) 带上限等待）；claude 为自写单工具。彻底移除 dsh-tool-subagent 依赖。v2.2 新增 argsProfiles 权限档位；v2.3 固化后台收数最佳实践文案（不新增 sleep 工具，见 DESIGN.md §8）。v2.4 新增 codex session 连续性：--json 强制捕获 session id（成功必有 id，否则按失败上报）+ session_id 参数续接历史会话（resume argv 从零构建，resumeArgs 为唯一旗标旋钮）。v2.5 claude 同样支持 session 连续性（--session-id 新会话/--resume 续接，工具层预生成 UUID）。",
   "type": "module",
   "main": "src/index.mjs",
   "exports": {
@@ -10,7 +10,6 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "DESIGN.md",
     "src",
     "test",
     "cordis.patch.yml",

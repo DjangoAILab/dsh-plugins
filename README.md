@@ -2,7 +2,7 @@
 
 # DSH Plugins
 
-### Give DeepSeek Harness a browser, a desktop, and a team of agents.
+### Operate browsers, desktops, subagents, and remote servers—with guardrails.
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
@@ -16,7 +16,7 @@ Open-source extensions and field-tested engineering notes for
 
 </div>
 
-## Three things worth seeing
+## Four things worth seeing
 
 ### 1. Browser Use — operate the DOM, not a pile of pixels
 
@@ -60,13 +60,35 @@ flowchart LR
 
 [Open the External Agents module →](plugins/manual/dsh-external-agents/README.md)
 
+### 4. SSH Operations — manage servers without handing credentials to the model
+
+Register remote hosts behind memorable aliases, then let the agent list those aliases and execute one bounded command
+at a time. Hostnames, usernames, private keys, login passwords, and sudo passwords stay behind the plugin boundary.
+TOFU host-key pinning, per-command approval, a separate elevation approval, and redacted JSONL audit records make the
+control path inspectable.
+
+```mermaid
+flowchart LR
+    O[Operator settings] --> R[Host aliases + credential refs]
+    A[Agent] --> T[ssh_list_hosts / ssh_exec]
+    T --> P[Policy + human approval]
+    R --> P
+    P --> F[TOFU host-key check]
+    F --> S[SSH server]
+    P --> L[Redacted audit log]
+```
+
+Sudo uses a two-step, fail-closed protocol: try passwordless execution first, and inject a stored sudo password only
+when the remote host proves it is required. The current release intentionally has no interactive PTY, upload, or
+download surface. [Open the SSH Operations module →](plugins/manual/ops-ssh-manager/README.md)
+
 ## Why it is built this way
 
 - **Structure first.** DOM and accessibility trees are cheaper, more inspectable, and more deterministic than
   screenshot-only control. Screenshots remain a deliberate fallback.
 - **Native lifecycle.** Plugins reuse DSH providers, Jobs, cancellation signals, and subprocess ownership.
 - **Least privilege by default.** Sensitive actions can require human approval; external agents keep a sandbox unless
-  the deployer deliberately selects a different profile.
+  the deployer deliberately selects a different profile. SSH elevation has its own approval boundary.
 - **Reversible modules.** Every module documents what changed, how it takes effect, and how to roll it back.
 
 ## Start here
@@ -76,7 +98,7 @@ git clone https://github.com/DjangoAILab/dsh-plugins.git
 cd dsh-plugins
 ```
 
-Choose one of the three modules above and follow its pinned install, verification, and rollback instructions. This
+Choose one of the four modules above and follow its pinned install, verification, and rollback instructions. This
 repository intentionally treats its directory tree as the complete index:
 
 ```bash

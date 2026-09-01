@@ -1,0 +1,3 @@
+name: Code + 1h Job Wait
+description: 与 Code 模式完全一致，仅把后台 job_output 的阻塞等待上限从 600s 调到 1 小时（tool-jobs 行配置）。
+order: 2

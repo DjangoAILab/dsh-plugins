@@ -1,0 +1,7 @@
+# F8：package.json "files" 里的 "driver" 目录只应分发 Swift 源码——
+# 编译产物一律不入 tarball（二进制不跨架构；v0.2.0 起无 winid 探针，窗口 id 由 driver 内
+# WindowRegistry 解析）。为旧版本残留产物保留兜底排除。
+axdriver
+winid
+winid.swift
+*.tmp-*

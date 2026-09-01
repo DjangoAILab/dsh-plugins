@@ -1,1 +1,6 @@
+# 编译产物（axdriver 由 swiftc 现场编译；v0.2.0 起无 winid 探针——窗口 id 由 driver
+# 内 WindowRegistry 解析。旧版本残留的 winid 产物仍在此忽略，兜底）。
 driver/axdriver
+driver/winid
+driver/winid.swift
+driver/*.tmp-*

@@ -29,14 +29,14 @@ export function renderNodeLine(node) {
 }
 
 /**
- * 渲染 snapshot 结果为模型可读文本。
- * @param {object} result driver snapshot 应答（nodes/nodeCount/...）
+ * 渲染 snapshot 结果为模型可读文本（v0.2.0：窗口身份是 windowId 句柄）。
+ * @param {object} result driver snapshot 应答（windowId/pid/nodes/...）
  * @returns {string[]}
  */
 export function renderSnapshotLines(result) {
   const lines = []
   const title = result.title ? JSON.stringify(result.title) : '(untitled window)'
-  lines.push(`window ${result.windowIndex ?? 0}/${result.windowCount ?? 1} of pid=${result.pid} — ${title}` +
+  lines.push(`window ${result.windowId ?? '?'} of pid=${result.pid ?? '?'} — ${title}` +
     (result.frame ? '  ' + frameText(result.frame) : ''))
   const nodes = Array.isArray(result.nodes) ? result.nodes : []
   if (nodes.length === 0) {
@@ -61,14 +61,29 @@ export function renderAppsLines(apps) {
   })
 }
 
-/** listWindows 的文本渲染。 */
+/**
+ * listWindows 的文本渲染（v0.2.0：按 app 分组，每项是 windowId 句柄）。
+ * @param {object} result driver listWindows 应答 { windows: [{windowId,pid,appName,...}] }
+ */
 export function renderWindowsLines(result) {
-  if (result.hint) return ['(no readable windows) ' + result.hint]
   const wins = Array.isArray(result.windows) ? result.windows : []
-  if (wins.length === 0) return ['(no windows)']
-  return wins.map((w) => {
+  if (wins.length === 0) {
+    return ['(no windows)' + (result.hint ? ' ' + result.hint : '')]
+  }
+  const lines = []
+  let currentApp = null
+  for (const w of wins) {
+    if (w.appName !== currentApp) {
+      currentApp = w.appName
+      lines.push(`- pid=${w.pid} ${w.appName ?? '?'}`)
+    }
     const flags =
-      (w.minimized === true ? ' [minimized]' : '') + (w.main === true ? ' [main]' : '')
-    return `- ${w.ref} ${JSON.stringify(w.title ?? '(untitled)')}  ${frameText(w.frame)}${flags}`
-  })
+      (w.minimized === true ? ' [minimized]' : '') +
+      (w.main === true ? ' [main]' : '') +
+      (w.focused === true ? ' [focused]' : '') +
+      (w.captureAvailable === true ? ' [capture ✓]' : '')
+    lines.push(`  - ${w.windowId} ${JSON.stringify(w.title ?? '(untitled)')}  ${frameText(w.frame)}${flags}`)
+  }
+  if (result.hint) lines.push('(hint) ' + result.hint)
+  return lines
 }

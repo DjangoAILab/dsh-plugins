@@ -72,6 +72,8 @@ test('codex 单工具注册：model 参数 + description 动态列举 + codex_mo
   assert.ok(props.model, 'model param present')
   assert.ok(props.prompt, 'prompt param present')
   assert.match(tool.description, /可用 model：flash \/ pro（默认 flash）/)
+  assert.match(tool.description, /不要 sleep\/轮询/)
+  assert.match(tool.parameters.properties.run_in_background.description, /wait: true/)
   assert.equal(tool.isConcurrencySafe({ description: 'd', prompt: 'p' }), true)
   const modelsTool = ctx.defs.codex_models
   assert.ok(modelsTool, 'codex_models tool registered')
@@ -120,6 +122,24 @@ test('codex 后台异步：立即返回 jobId，jobs.start 收到 owner+run', as
   assert.equal(typeof job.run, 'function')
 })
 
+test('后台收数引导：render 带 jobId 的后台结果必须携带 wait/通知最佳实践文案', async () => {
+  const ctx = makeCtx()
+  mountCodexTools(ctx, codexSpec())
+  const codexBg = await ctx.defs.codex.execute({ description: 'bg', prompt: 'p', run_in_background: true }, execSignal())
+  const codexRender = ctx.defs.codex.output.render({}, codexBg)[0].text
+  assert.match(codexRender, /subagent-1/)
+  assert.match(codexRender, /wait: true/)
+  assert.match(codexRender, /不要 sleep 或定时轮询/)
+  assert.match(codexRender, /完成时父会话会自动收到 completion notice/)
+
+  const cs = parseClaudeConfig({ command: 'claude', args: ['--print'] })
+  mountSingleTool(ctx, { toolName: cs.toolName, providerName: 'external:claude', body: 'b', modelInfo: undefined })
+  const claudeBg = await ctx.defs.claude_code.execute({ description: 'bg', prompt: 'p', run_in_background: true }, execSignal())
+  const claudeRender = ctx.defs.claude_code.output.render({}, claudeBg)[0].text
+  assert.match(claudeRender, /subagent-2/)
+  assert.match(claudeRender, /job_kill/)
+})
+
 test('后台取消链：cancel → AbortSignal → subagent start 后被标记 aborted', async () => {
   const ctx = makeCtx()
   mountCodexTools(ctx, codexSpec())
@@ -146,13 +166,14 @@ test('claude 单工具：自写注册（无 model 参数时省略 model）', () 
   const props = tool.parameters.properties
   assert.ok(!props.model, '无 model 时不暴露 model 参数')
   assert.ok(props.run_in_background, 'run_in_background 存在')
+  assert.match(props.run_in_background.description, /wait: true/, '参数文案必须引导 wait:true/完成通知，不能只说轮询')
   dispose()
   assert.equal(ctx.defs.claude_code, undefined)
 })
 
 test('claude 单工具前台：路由到 external:claude（不暴露 model 参数，模型由 config 烘焙）', async () => {
   const ctx = makeCtx()
-  const cs = parseClaudeConfig({ command: 'claude', args: ['--print'], model: 'provider-model' })
+  const cs = parseClaudeConfig({ command: 'claude', args: ['--print'], model: 'provider-model-fast' })
   mountSingleTool(ctx, {
     toolName: cs.toolName,
     providerName: 'external:claude',
@@ -164,4 +185,105 @@ test('claude 单工具前台：路由到 external:claude（不暴露 model 参�
   const out = await tool.execute({ description: 't', prompt: 'p' }, execSignal())
   assert.equal(out.kind, 'foreground')
   assert.deepEqual(ctx.starts, ['external:claude'])
+})
+// ---- v2.4 session 连续性：session_id 参数 ----
+
+test('v2.4：session_id 缺省 → request 不带 sessionId（全新会话路径）', async () => {
+  const ctx = makeCtx()
+  mountCodexTools(ctx, codexSpec())
+  const seen = []
+  ctx.subagents.start = async (name, req) => { seen.push(req); return { id: 'rx', result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' }), dispose: async () => {} } }
+  await ctx.defs.codex.execute({ description: 't', prompt: 'p' }, execSignal())
+  assert.equal(seen[0].sessionId, undefined)
+})
+
+test('v2.4：合法 UUID session_id → provider 收到（mock start 捕获 request）', async () => {
+  const ctx = makeCtx()
+  mountCodexTools(ctx, codexSpec())
+  // mock start 把 request 记下来（makeCtx 的 starts 只记 provider 名，这里补一处 request 捕获）
+  const seen = []
+  ctx.subagents.start = async (name, req) => { seen.push(req); return { id: 'rx', result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' }), dispose: async () => {} } }
+  const sid = '01a056eb-14ab-7b63-a3c8-ef286678ecb0'
+  const out = await ctx.defs.codex.execute({ description: 't', prompt: 'p', session_id: sid }, execSignal())
+  assert.equal(seen[0].sessionId, sid)
+  assert.equal(out.sessionId, undefined) // mock result 无 sessionId 字段，schema 可选容错
+})
+
+test('v2.4 fail loud：非法 session_id（防注入，拒绝在触达 provider 之前）', async () => {
+  const ctx = makeCtx()
+  mountCodexTools(ctx, codexSpec())
+  await assert.rejects(
+    () => ctx.defs.codex.execute({ description: 't', prompt: 'p', session_id: 'x; rm -rf /' }, execSignal()),
+    /session_id must be a UUID/,
+  )
+  assert.deepEqual(ctx.starts, [])
+})
+
+test('v2.4：前台结果携带 sessionId + render 末尾 session id 尾行', async () => {
+  const ctx = makeCtx()
+  mountCodexTools(ctx, codexSpec())
+  const sid = '01a056eb-14ab-7b63-a3c8-ef286678ecb0'
+  ctx.subagents.start = async (name, req) => ({ id: 'rx', result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed', sessionId: sid }), dispose: async () => {} })
+  const out = await ctx.defs.codex.execute({ description: 't', prompt: 'p' }, execSignal())
+  assert.equal(out.sessionId, sid)
+  const rendered = ctx.defs.codex.output.render({}, out)[0].text
+  assert.match(rendered, /session id: 01a056eb-14ab-7b63-a3c8-ef286678ecb0$/)
+})
+
+test('v2.4：工具 description 教父模型回传 session id', () => {
+  const ctx = makeCtx()
+  mountCodexTools(ctx, codexSpec())
+  assert.match(ctx.defs.codex.description, /session_id/)
+  assert.match(ctx.defs.codex.description, /session id 行是续接凭证/)
+})
+
+// ---- v2.5 claude session 连续性 ----
+
+test('v2.5 claude：sessionSupport 开启时新会话预生成 UUID + freshSession 标记', async () => {
+  const ctx = makeCtx()
+  const cs = parseClaudeConfig({ command: 'claude' })
+  mountSingleTool(ctx, { toolName: cs.toolName, providerName: 'external:claude', body: 'b', modelInfo: undefined, sessionSupport: cs.sessionSupport })
+  const tool = ctx.defs.claude_code
+  assert.ok(tool.parameters.properties.session_id, 'session_id param present')
+  const seen = []
+  ctx.subagents.start = async (name, req) => { seen.push(req); return { id: 'rc', result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed', sessionId: req.sessionId }), dispose: async () => {} } }
+  const out = await tool.execute({ description: 't', prompt: 'p' }, execSignal())
+  assert.match(seen[0].sessionId, /^[0-9a-f-]{36}$/)
+  assert.equal(seen[0].freshSession, true)
+  assert.equal(out.sessionId, seen[0].sessionId)
+  const rendered = tool.output.render({}, out)[0].text
+  assert.match(rendered, new RegExp('session id: ' + out.sessionId + '$'))
+})
+
+test('v2.5 claude：session_id 传回 → freshSession=false（resume 路径）', async () => {
+  const ctx = makeCtx()
+  const cs = parseClaudeConfig({ command: 'claude' })
+  mountSingleTool(ctx, { toolName: cs.toolName, providerName: 'external:claude', body: 'b', modelInfo: undefined, sessionSupport: true })
+  const seen = []
+  ctx.subagents.start = async (name, req) => { seen.push(req); return { id: 'rc', result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed', sessionId: req.sessionId }), dispose: async () => {} } }
+  const sid = '01a05ac8-f34b-7d93-b5cc-ef59bf344983'
+  await ctx.defs.claude_code.execute({ description: 't', prompt: 'p', session_id: sid }, execSignal())
+  assert.equal(seen[0].sessionId, sid)
+  assert.equal(seen[0].freshSession, false)
+})
+
+test('v2.5 claude fail loud：非法 session_id', async () => {
+  const ctx = makeCtx()
+  const cs = parseClaudeConfig({ command: 'claude' })
+  mountSingleTool(ctx, { toolName: cs.toolName, providerName: 'external:claude', body: 'b', modelInfo: undefined, sessionSupport: true })
+  await assert.rejects(
+    () => ctx.defs.claude_code.execute({ description: 't', prompt: 'p', session_id: 'bad; rm -rf' }, execSignal()),
+    /session_id must be a UUID/,
+  )
+})
+
+test('v2.5 claude：sessionSupport 关闭时无 session_id 参数且不注入', async () => {
+  const ctx = makeCtx()
+  const cs = parseClaudeConfig({ command: 'claude', session: false })
+  mountSingleTool(ctx, { toolName: cs.toolName, providerName: 'external:claude', body: 'b', modelInfo: undefined, sessionSupport: cs.sessionSupport })
+  assert.equal(ctx.defs.claude_code.parameters.properties.session_id, undefined)
+  const seen = []
+  ctx.subagents.start = async (name, req) => { seen.push(req); return { id: 'rc', result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' }), dispose: async () => {} } }
+  await ctx.defs.claude_code.execute({ description: 't', prompt: 'p' }, execSignal())
+  assert.equal(seen[0].sessionId, undefined)
 })

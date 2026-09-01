@@ -83,12 +83,23 @@ export class CdpClient {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.wsUrl)
       this.ws = ws
-      ws.addEventListener('open', () => resolve())
+      // 10s 连接 deadline：Chrome 挂起/端口假活时 open promise 可能永远不落定，
+      // 超时则关掉这条 WebSocket 并按 CDP_OPEN_TIMEOUT 拒绝（调用方负责清理）。
+      const timer = setTimeout(() => {
+        try { ws.close() } catch { /* ignore */ }
+        reject(new CdpError('CDP WebSocket 连接超时（10s）：' + this.wsUrl, 'CDP_OPEN_TIMEOUT'))
+      }, 10000)
+      ws.addEventListener('open', () => {
+        clearTimeout(timer)
+        resolve()
+      })
       ws.addEventListener('error', () => {
+        clearTimeout(timer)
         reject(new CdpError('CDP WebSocket 连接失败：' + this.wsUrl, 'CDP_WS_ERROR'))
       })
       ws.addEventListener('message', (event) => this._onMessage(event))
       ws.addEventListener('close', () => {
+        clearTimeout(timer)
         this.closed = true
       })
     })

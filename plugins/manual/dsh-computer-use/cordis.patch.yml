@@ -1,5 +1,5 @@
 # dsh-computer-use bundle patch：把插件行插入 profile roster。
-# 安装：从仓库根目录执行 dsh plugin --profile <name> add "file:$PWD/plugins/manual/dsh-computer-use"。
+# 安装：dsh-lab install dsh-computer-use（隔离验证）；提升到本机时用同一份 tarball。
 # （bundle 插件，装完必须重启 DSH 才生效。见 knowledge/foundations/plugin-loading-and-hot-reload.md）
 #
 # 设计权威见 knowledge/domains/computer-use/architecture-framework.md（ADR-1/ADR-3、P2）与
@@ -12,6 +12,9 @@
         # Swift driver 编译产物目录：留空 = <插件目录>/driver（axdriver.swift 现场编译成 axdriver）。
         # Lab 容器内是 Linux，driver/工具会在非 darwin 平台 fail-closed 报「仅支持 macOS」。
         driverDir: ''
+        # 编译缓存目录（R9）：driver 目录只读（只读安装）时编译产物回退到这里。
+        # 留空 = $DSH_HOME/dsh-computer-use/bin。一般无需配置，测试注入用。
+        cacheBinDir: ''
         # Swift 编译器路径：留空 = /usr/bin/swiftc（Xcode CLT）。
         swiftcPath: ''
         # 敏感动作（click/type/key/scroll/menu/app）是否走人工审批

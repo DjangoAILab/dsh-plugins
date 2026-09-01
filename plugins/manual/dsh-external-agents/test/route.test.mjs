@@ -9,23 +9,23 @@ test('codex builtin 多 route 解析', () => {
   const spec = parseCodexConfig({
     command: 'codex',
     args: ['exec', '-s', 'workspace-write'],
-    defaultModel: 'builtin-a',
+    defaultModel: 'gpt-5.6-sol',
     providers: BUILTIN_PROVIDERS,
     models: {
-      'builtin-a': { provider: 'builtin', model: 'provider-model-a' },
-      'builtin-b': { provider: 'builtin', model: 'provider-model-b' },
+      'gpt-5.6-sol': { provider: 'builtin', model: 'gpt-5.6-sol' },
+      'gpt-5.5': { provider: 'builtin', model: 'gpt-5.5' },
     },
   })
   assert.equal(spec.toolName, 'codex')
-  assert.equal(spec.defaultModel, 'builtin-a')
+  assert.equal(spec.defaultModel, 'gpt-5.6-sol')
   assert.equal(spec.models.length, 2)
-  assert.equal(spec.models[0].providerName, 'external:codex:builtin-a')
+  assert.equal(spec.models[0].providerName, 'external:codex:gpt-5.6-sol')
   assert.equal(spec.models[0].kind, 'builtin')
   assert.deepEqual(spec.models[0].extraArgs, [])
-  assert.deepEqual(spec.modelAliases, ['builtin-a', 'builtin-b'])
+  assert.deepEqual(spec.modelAliases, ['gpt-5.6-sol', 'gpt-5.5'])
   assert.equal(spec.modelsView.length, 2)
   // description 动态列举依赖的就是 modelAliases，这里保证顺序稳定
-  assert.equal(spec.modelAliases.join(' / '), 'builtin-a / builtin-b')
+  assert.equal(spec.modelAliases.join(' / '), 'gpt-5.6-sol / gpt-5.5')
 })
 
 test('codex gateway(custom) route：-c 覆盖（含 name）+ env key', () => {
@@ -33,13 +33,13 @@ test('codex gateway(custom) route：-c 覆盖（含 name）+ env key', () => {
     command: 'codex',
     defaultModel: 'fast',
     providers: {
-      gateway: { baseUrl: 'https://api.example.com/v1', wireApi: 'responses', envKey: 'K', apiKey: 'test-key' },
+      gateway: { baseUrl: 'https://api.example.com/v1', wireApi: 'responses', envKey: 'K', apiKey: 'test-value' },
     },
     models: { fast: { provider: 'gateway', model: 'provider-model-fast' } },
   })
   const r = spec.models[0]
   assert.equal(r.kind, 'custom')
-  assert.equal(r.env.K, 'test-key')
+  assert.equal(r.env.K, 'test-value')
   // name 覆盖是 codex 0.146 的硬性要求（缺它报 provider name must not be empty）
   assert.ok(r.extraArgs.includes('model_providers.gateway.name=gateway'))
   assert.ok(r.extraArgs.some((a) => a.startsWith('model_providers.gateway.base_url=')))
@@ -102,10 +102,10 @@ test('fail loud：models 项不是对象', () => {
 })
 
 test('claude builtin 解析', () => {
-  const s = parseClaudeConfig({ command: 'claude', args: ['--print'], model: 'provider-model' })
+  const s = parseClaudeConfig({ command: 'claude', args: ['--print'], model: 'provider-model-fast' })
   assert.equal(s.toolName, 'claude_code')
   assert.equal(s.command, 'claude')
-  assert.equal(s.model, 'provider-model')
+  assert.equal(s.model, 'provider-model-fast')
   assert.equal(s.providerId, 'builtin')
   assert.equal(s.stdinSentinel, undefined)
 })
@@ -180,7 +180,7 @@ test('codex spec 带出 argsProfiles 视图', () => {
     models: { a: { provider: 'builtin', model: 'gpt' } },
   })
   assert.deepEqual(spec.argsProfiles, { active: 'normal', available: ['yolo', 'normal'] })
-  assert.deepEqual(spec.args, ['exec', '-s', 'workspace-write'])
+  assert.deepEqual(spec.args, ['exec', '-s', 'workspace-write', '--json']) // v2.4 注入 --json
 })
 
 test('claude spec 带出 argsProfiles 视图', () => {
@@ -242,4 +242,48 @@ test('parseClaudeConfig 透传 fail loud：具名档缺 normal 基线', () => {
     () => parseClaudeConfig({ command: 'claude', argsProfiles: { yolo: ['--print', '--dangerously-skip-permissions'] } }),
     /claude args profiles: missing a "normal" baseline/,
   )
+})
+
+// ---- v2.4 session 连续性：--json 强制注入 / resumeArgs 校验 ----
+
+const BASE = { command: 'codex', providers: BUILTIN_PROVIDERS, models: { flash: { provider: 'builtin', model: 'flash' } } }
+
+test('v2.4：active args 缺 --json 时自动注入（成功必有 id，不留关闭逃生门）', () => {
+  const spec = parseCodexConfig({ ...BASE, args: ['exec', '-s', 'workspace-write'] })
+  assert.ok(spec.args.includes('--json'))
+  const spec2 = parseCodexConfig({ ...BASE, args: ['exec', '--json'] })
+  assert.equal(spec2.args.filter((a) => a === '--json').length, 1)
+})
+
+test('v2.4：resumeArgs 默认集（--json + --skip-git-repo-check）', () => {
+  const spec = parseCodexConfig(BASE)
+  assert.ok(spec.resumeArgs.includes('--skip-git-repo-check'))
+  assert.ok(spec.resumeArgs.includes('--json'))
+  assert.equal(spec.stdoutMaxBytes, 256 * 1024)
+})
+
+test('v2.4：resumeArgs 透传 + 自动补 --json', () => {
+  const spec = parseCodexConfig({ ...BASE, resumeArgs: ['-c', 'sandbox_mode=workspace-write'] })
+  assert.deepEqual(spec.resumeArgs, ['-c', 'sandbox_mode=workspace-write', '--json'])
+  const spec2 = parseCodexConfig({ ...BASE, resumeArgs: ['--json'] })
+  assert.equal(spec2.resumeArgs.filter((a) => a === '--json').length, 1)
+})
+
+test('v2.4 fail loud：resumeArgs 含 --ephemeral（不落盘=不可 resume）', () => {
+  assert.throws(
+    () => parseCodexConfig({ ...BASE, resumeArgs: ['--ephemeral'] }),
+    /must not contain --ephemeral/,
+  )
+})
+
+test('v2.4 fail loud：resumeArgs 非数组', () => {
+  assert.throws(
+    () => parseCodexConfig({ ...BASE, resumeArgs: 'nope' }),
+    /must be an array/,
+  )
+})
+
+test('v2.4：stdoutMaxBytes 正整数覆盖，非法回退默认', () => {
+  assert.equal(parseCodexConfig({ ...BASE, stdoutMaxBytes: 1024 }).stdoutMaxBytes, 1024)
+  assert.equal(parseCodexConfig({ ...BASE, stdoutMaxBytes: -5 }).stdoutMaxBytes, 256 * 1024)
 })
